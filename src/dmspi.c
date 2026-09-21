@@ -7,11 +7,27 @@
 #include "dmini.h"
 #include "dm_sw_ring.h"
 #include "dmgpio_lease.h"
+#include "dmspi_lease.h"
+#include "dmosi.h"
 #include <errno.h>
 #include <string.h>
 
 /* Magic set to DSPI */
 #define DMSPI_CONTEXT_MAGIC    0x44535049
+
+/* ---- Instance registry, for dmspi_lease.h ----
+ *
+ * Other driver modules (a sensor, flash, or display driver, say) need to
+ * reach an already-configured dmspi instance the same boot-order-safe way
+ * dmspi itself reaches dmgpio for cs_pin: a direct Built-in API call
+ * (dmspi_acquire(), below), not a /dev path. That means dmspi_acquire()
+ * needs to find a live context by instance number without going through
+ * dmdrvi/dmdevfs at all - this small fixed table, populated in _create()
+ * and cleared in _free(), is what it looks up.
+ */
+#define DMSPI_MAX_INSTANCES    8
+
+static dmdrvi_context_t g_instances[DMSPI_MAX_INSTANCES];
 
 /* ---- Chip-select (CS/NSS) management ----
  *
@@ -60,6 +76,8 @@ struct dmdrvi_context
     dm_sw_ring_flags_t   rx_ring_wait_flags;     /**< RX ring read-wait behavior (from config) */
     dmgpio_lease_t       cs_lease;               /**< CS pin lease (NULL = unmanaged) */
     bool                 cs_active_high;         /**< true = assert by driving the pin high instead of low */
+    dmosi_mutex_t        bus_lock;               /**< Serializes transfers - see locked_transfer() */
+    int                  lease_count;            /**< Outstanding dmspi_acquire()s, for the _free() diagnostic */
 };
 
 static void cs_assert(dmdrvi_context_t context)
@@ -72,6 +90,30 @@ static void cs_deassert(dmdrvi_context_t context)
 {
     if (context->cs_lease != NULL)
         dmgpio_pin_write(context->cs_lease, !context->cs_active_high);
+}
+
+/**
+ * @brief Full-duplex transfer, serialized against every other transfer on
+ * this instance (whether reached via /dev or a dmspi_lease_t) and wrapped
+ * in the same CS-assert/deassert pair _read/_write/dmspi_ioctl_cmd_transfer
+ * already use. The one place that actually touches the bus - both the
+ * dmdrvi _ioctl(transfer) branch and dmspi_transfer() (dmspi_lease.h) call
+ * this instead of dmspi_port_transfer() directly.
+ */
+static int locked_transfer(dmdrvi_context_t context, const uint8_t *tx, uint8_t *rx, size_t size)
+{
+    dmosi_mutex_lock(context->bus_lock);
+
+    if (context->config.role == dmspi_role_master)
+        cs_assert(context);
+
+    int ret = dmspi_port_transfer(context->config.instance, tx, rx, size);
+
+    if (context->config.role == dmspi_role_master)
+        cs_deassert(context);
+
+    dmosi_mutex_unlock(context->bus_lock);
+    return ret;
 }
 
 static int is_valid_context(dmdrvi_context_t context)
@@ -518,17 +560,28 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmspi, dmdrvi_context_t, _create, ( dmini_c
     memset(context, 0, sizeof(*context));
     context->magic = DMSPI_CONTEXT_MAGIC;
 
-    if (read_config_parameters(context, config) != 0 ||
+    context->bus_lock = dmosi_mutex_create(false);
+
+    if (context->bus_lock == NULL ||
+        read_config_parameters(context, config) != 0 ||
         setup_cs_pin(context, config) != 0 ||
         configure(context) != 0)
     {
         DMOD_LOG_ERROR("Failed to create DMDRVI context with provided configuration\n");
         if (context->cs_lease != NULL)
             dmgpio_pin_release(context->cs_lease);
+        if (context->bus_lock != NULL)
+            dmosi_mutex_destroy(context->bus_lock);
         Dmod_Free(context->interrupt_handler_name);
         Dmod_Free(context);
         return NULL;
     }
+
+    /* Make this instance reachable through dmspi_acquire() (dmspi_lease.h) -
+     * out-of-range instance numbers just aren't lease-able, nothing else
+     * depends on this. */
+    if (context->config.instance >= 1 && context->config.instance <= DMSPI_MAX_INSTANCES)
+        g_instances[context->config.instance - 1] = context;
 
     /* Create RX ring buffer */
     if (context->rx_ring_size > 0)
@@ -589,6 +642,14 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmspi, void, _free, ( dmdrvi_context_t cont
 {
     if (is_valid_context(context))
     {
+        if (context->lease_count != 0)
+            DMOD_LOG_ERROR("Freeing SPI%u with %d outstanding dmspi_acquire() lease(s)\n",
+                context->config.instance, context->lease_count);
+
+        if (context->config.instance >= 1 && context->config.instance <= DMSPI_MAX_INSTANCES &&
+            g_instances[context->config.instance - 1] == context)
+            g_instances[context->config.instance - 1] = NULL;
+
         if (context->rx_ring != NULL || context->interrupt_handler_name != NULL)
             dmspi_port_remove_interrupt_handler(context->config.instance, context);
 
@@ -604,6 +665,12 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmspi, void, _free, ( dmdrvi_context_t cont
             cs_deassert(context);
             dmgpio_pin_release(context->cs_lease);
             context->cs_lease = NULL;
+        }
+
+        if (context->bus_lock != NULL)
+        {
+            dmosi_mutex_destroy(context->bus_lock);
+            context->bus_lock = NULL;
         }
 
         Dmod_Free(context->interrupt_handler_name);
@@ -636,6 +703,8 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmspi, size_t, _read, ( dmdrvi_context_t co
     if (context->rx_ring != NULL)
         return (size_t)dm_sw_ring_read(context->rx_ring, buffer, (dm_sw_ring_capacity_t)size);
 
+    dmosi_mutex_lock(context->bus_lock);
+
     if (context->config.role == dmspi_role_master)
         cs_assert(context);
 
@@ -644,6 +713,8 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmspi, size_t, _read, ( dmdrvi_context_t co
 
     if (context->config.role == dmspi_role_master)
         cs_deassert(context);
+
+    dmosi_mutex_unlock(context->bus_lock);
 
     if (ret != 0)
         return 0;
@@ -655,6 +726,8 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmspi, size_t, _write, ( dmdrvi_context_t c
     if (!is_valid_context(context) || buffer == NULL || size == 0)
         return 0;
 
+    dmosi_mutex_lock(context->bus_lock);
+
     if (context->config.role == dmspi_role_master)
         cs_assert(context);
 
@@ -662,6 +735,8 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmspi, size_t, _write, ( dmdrvi_context_t c
 
     if (context->config.role == dmspi_role_master)
         cs_deassert(context);
+
+    dmosi_mutex_unlock(context->bus_lock);
 
     if (ret != 0)
         return 0;
@@ -693,16 +768,7 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmspi, int, _ioctl, ( dmdrvi_context_t cont
     {
         if (arg == NULL) return -EINVAL;
         dmspi_transfer_t *xfer = (dmspi_transfer_t *)arg;
-
-        if (context->config.role == dmspi_role_master)
-            cs_assert(context);
-
-        ret = dmspi_port_transfer(context->config.instance, xfer->tx, xfer->rx, xfer->size);
-
-        if (context->config.role == dmspi_role_master)
-            cs_deassert(context);
-
-        return ret;
+        return locked_transfer(context, xfer->tx, xfer->rx, xfer->size);
     }
 
     if (command == dmspi_ioctl_cmd_set_interrupt_handler)
@@ -771,4 +837,40 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmspi, int, _stat, ( dmdrvi_context_t conte
     stat->size = 0; /* Stream/message device, no fixed size */
     stat->mode = 0666;
     return 0;
+}
+
+/* ---- dmspi_lease.h: direct access for other driver modules ---- */
+
+dmod_dmspi_api_declaration(1.0, int, _acquire, ( dmspi_instance_t instance, dmspi_lease_t *out ))
+{
+    if (out == NULL)
+        return -EINVAL;
+    *out = NULL;
+
+    if (instance < 1 || instance > DMSPI_MAX_INSTANCES)
+        return -EINVAL;
+
+    dmdrvi_context_t context = g_instances[instance - 1];
+    if (!is_valid_context(context))
+        return -ENODEV;
+
+    context->lease_count++;
+    *out = (dmspi_lease_t)context;
+    return 0;
+}
+
+dmod_dmspi_api_declaration(1.0, void, _release, ( dmspi_lease_t lease ))
+{
+    dmdrvi_context_t context = (dmdrvi_context_t)lease;
+    if (is_valid_context(context) && context->lease_count > 0)
+        context->lease_count--;
+}
+
+dmod_dmspi_api_declaration(1.0, int, _transfer, ( dmspi_lease_t lease, const uint8_t *tx, uint8_t *rx, size_t size ))
+{
+    dmdrvi_context_t context = (dmdrvi_context_t)lease;
+    if (!is_valid_context(context) || size == 0)
+        return -EINVAL;
+
+    return locked_transfer(context, tx, rx, size);
 }

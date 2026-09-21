@@ -73,6 +73,7 @@ dmod_link_modules(${DMOD_MODULE_NAME}
     dmhaman
     dm_sw_ring
     dmgpio
+    dmosi
 )
 
 target_include_directories(${DMOD_MODULE_NAME} PRIVATE

@@ -151,6 +151,47 @@ guessed or hardcoded).
 loopback pair, not a fixed slave device), so it doesn't demonstrate CS
 management - see "Chip select" above for that.
 
+## Usage from another driver module
+
+A driver for a specific SPI device - a flash chip, a sensor, a display
+controller - usually isn't application code calling through `/dev`; it's
+another *driver*, typically created during the same `dmdevfs` boot-time
+config scan dmspi itself runs in. Opening `/dev/dmspiN` from inside such a
+driver's own `_create()` hits the exact ordering problem `cs_pin` used to
+have before it moved off `/dev` (see "Chip select" above): `dmdevfs`'s
+`/dev` mount isn't marked ready yet during that scan, so `Dmod_FileOpen()`
+on it can fail there even for a perfectly valid path.
+
+`dmspi_lease.h` gives other driver modules the same fix dmspi itself now
+gets from dmgpio: a direct Built-in API (`dmod_link_modules(<you> dmspi)`),
+resolved by the loader at module-load time, not a `/dev` lookup - so it
+works regardless of mount readiness. `dmspi_acquire()` looks up an
+already-`_create()`'d instance by number; give your board-config section a
+`driver_order` after dmspi's own so it's guaranteed to exist by the time
+you acquire it. `dmspi_transfer()` does the same CS handling as `/dev`
+(asserts/deasserts `cs_pin` around the call, in `role=master`), and is
+internally serialized against every other transfer on that instance -
+`/dev`-based or leased - so it's safe for more than one driver to lease
+the same bus, as long as each manages its own CS if there's more than one
+slave on it.
+
+```c
+#include "dmspi_lease.h"
+
+dmspi_lease_t spi;
+if (dmspi_acquire(1, &spi) != 0)
+{
+    /* SPI1 wasn't created yet, or doesn't exist in this config - check
+     * driver_order in your board config. */
+}
+
+uint8_t tx[2] = { 0x9F, 0x00 }; /* e.g. a flash chip's JEDEC ID command */
+uint8_t rx[2];
+dmspi_transfer(spi, tx, rx, sizeof(tx));
+
+dmspi_release(spi);
+```
+
 ## Usage without dmdevfs (advanced)
 
 Talking to dmspi directly - without a `dmdevfs`-mounted path - is possible
