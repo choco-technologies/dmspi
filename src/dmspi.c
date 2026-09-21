@@ -53,23 +53,57 @@ struct dmdrvi_context
     dm_sw_ring_t         rx_ring;                /**< Software ring buffer for received bytes */
     uint32_t             rx_ring_size;           /**< Capacity of the RX ring buffer (from config) */
     dm_sw_ring_flags_t   rx_ring_wait_flags;     /**< RX ring read-wait behavior (from config) */
-    void                *cs_fp;                  /**< dmgpio device handle for the CS pin (NULL = unmanaged) */
+    char                *cs_path;                /**< CS pin device path (NULL = unmanaged); see cs_ensure_open() */
+    void                *cs_fp;                  /**< dmgpio device handle for the CS pin, opened lazily */
     bool                 cs_active_high;         /**< true = assert by driving the pin high instead of low */
+    bool                 cs_open_failed;         /**< true once a failed lazy-open has been logged (avoid log spam) */
 };
-
-static void cs_assert(dmdrvi_context_t context)
-{
-    if (context->cs_fp == NULL)
-        return;
-    int state = context->cs_active_high ? DMGPIO_PINS_STATE_ALL_HIGH : DMGPIO_PINS_STATE_ALL_LOW;
-    Dmod_Ioctl(context->cs_fp, DMGPIO_IOCTL_CMD_SET_PINS_STATE, &state);
-}
 
 static void cs_deassert(dmdrvi_context_t context)
 {
     if (context->cs_fp == NULL)
         return;
     int state = context->cs_active_high ? DMGPIO_PINS_STATE_ALL_LOW : DMGPIO_PINS_STATE_ALL_HIGH;
+    Dmod_Ioctl(context->cs_fp, DMGPIO_IOCTL_CMD_SET_PINS_STATE, &state);
+}
+
+/**
+ * @brief Open context->cs_path on first use, caching the handle.
+ *
+ * Deliberately NOT opened at _create() time: _create() can run as part of
+ * dmdevfs's initial boot-time config scan, before dmdevfs's own /dev mount
+ * is marked "ready" (see dmfsi_dmdevfs_mounted() in dmdevfs.c) -
+ * Dmod_FileOpen() on another /dev path fails during that window even for a
+ * perfectly valid path (confirmed on real STM32F746G-DISCO hardware: the
+ * exact same path that fails during boot opens fine once queried
+ * afterwards, e.g. from an interactive shell). By the time a caller
+ * actually transfers data, boot has long finished, so opening here instead
+ * of at create time sidesteps the ordering problem entirely.
+ */
+static bool cs_ensure_open(dmdrvi_context_t context)
+{
+    if (context->cs_fp != NULL)
+        return true;
+    if (context->cs_path == NULL || context->cs_open_failed)
+        return false;
+
+    context->cs_fp = Dmod_FileOpen(context->cs_path, "r+");
+    if (context->cs_fp == NULL)
+    {
+        DMOD_LOG_ERROR("Failed to open CS pin device '%s'\n", context->cs_path);
+        context->cs_open_failed = true;
+        return false;
+    }
+
+    cs_deassert(context); /* start deselected */
+    return true;
+}
+
+static void cs_assert(dmdrvi_context_t context)
+{
+    if (!cs_ensure_open(context))
+        return;
+    int state = context->cs_active_high ? DMGPIO_PINS_STATE_ALL_HIGH : DMGPIO_PINS_STATE_ALL_LOW;
     Dmod_Ioctl(context->cs_fp, DMGPIO_IOCTL_CMD_SET_PINS_STATE, &state);
 }
 
@@ -302,12 +336,13 @@ static int read_config_parameters(dmdrvi_context_t context, dmini_context_t conf
 }
 
 /**
- * @brief Open the CS pin device named by 'cs_path', if configured.
+ * @brief Record the CS pin device path named by 'cs_path', if configured.
  *
- * Requires context->config.role to already be set (read_config_parameters()
- * must run first). A no-op (returns 0) when cs_path is absent, or when
- * role=slave (a slave never drives its own CS - see the file header
- * comment on CS management).
+ * Does not open it - see cs_ensure_open()'s comment for why that has to
+ * wait until first use. Requires context->config.role to already be set
+ * (read_config_parameters() must run first). A no-op (returns 0) when
+ * cs_path is absent, or when role=slave (a slave never drives its own CS -
+ * see the file header comment on CS management).
  */
 static int setup_cs_pin(dmdrvi_context_t context, dmini_context_t config)
 {
@@ -327,14 +362,13 @@ static int setup_cs_pin(dmdrvi_context_t context, dmini_context_t config)
     context->cs_active_high = (strcmp(
         dmini_get_string(config, section, "cs_active_level", "low"), "high") == 0);
 
-    context->cs_fp = Dmod_FileOpen(cs_path, "r+");
-    if (context->cs_fp == NULL)
+    context->cs_path = Dmod_StrDup(cs_path);
+    if (context->cs_path == NULL)
     {
-        DMOD_LOG_ERROR("Failed to open CS pin device '%s'\n", cs_path);
-        return -EINVAL;
+        DMOD_LOG_ERROR("Failed to allocate CS pin path\n");
+        return -ENOMEM;
     }
 
-    cs_deassert(context); /* start deselected */
     return 0;
 }
 
@@ -488,8 +522,7 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmspi, dmdrvi_context_t, _create, ( dmini_c
         configure(context) != 0)
     {
         DMOD_LOG_ERROR("Failed to create DMDRVI context with provided configuration\n");
-        if (context->cs_fp != NULL)
-            Dmod_FileClose(context->cs_fp);
+        Dmod_Free(context->cs_path);
         Dmod_Free(context->interrupt_handler_name);
         Dmod_Free(context);
         return NULL;
@@ -570,6 +603,7 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmspi, void, _free, ( dmdrvi_context_t cont
             Dmod_FileClose(context->cs_fp);
             context->cs_fp = NULL;
         }
+        Dmod_Free(context->cs_path);
 
         Dmod_Free(context->interrupt_handler_name);
         dmspi_port_deinit(context->config.instance);

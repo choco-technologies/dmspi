@@ -20,7 +20,7 @@ do it):
 | `clock_phase` | string | "1edge" | `"1edge"` or `"2edge"` (CPHA) |
 | `bit_order` | string | "msb_first" | `"msb_first"` or `"lsb_first"` |
 | `nss_mode` | string | "soft" | `"soft"` (peripheral ignores NSS - see `cs_path` below) or `"hard"` (peripheral drives/reads the physical NSS pin) |
-| `cs_path` | string | (none) | Path to a separately dmdevfs-configured `dmgpio` output device (e.g. `/dev/flash_cs`) - if set, dmspi asserts/deasserts it automatically around every transfer in `role=master`. Ignored for `role=slave`. See "Chip select" below |
+| `cs_path` | string | (none) | Path to a separately dmdevfs-configured `dmgpio` output device (e.g. `/dev/dmgpio0/flash_cs` - see "Chip select" below for the path format) - if set, dmspi asserts/deasserts it automatically around every transfer in `role=master`. Ignored for `role=slave` |
 | `cs_active_level` | string | "low" | `"low"` or `"high"` - which level `cs_path` is driven to when asserting (selecting) the device |
 | `interrupt_trigger` | string | "off" | `"off"`, `"rx_not_empty"`, `"tx_empty"`, or `"error"` |
 | `interrupt_handler` | string | (none) | Name of a dmhaman-registered handler to call on interrupt |
@@ -37,8 +37,24 @@ more flexibility than that: one bus master talking to several slaves, each
 with its own CS line, or a CS pin the SPI peripheral doesn't own directly.
 `cs_path` covers the common case - **one** fixed slave device - by pointing
 dmspi at a `dmgpio` output pin configured as its own separate `dmdevfs`
-device; dmspi opens it once (`Dmod_FileOpen`) and asserts/deasserts it via
-`Dmod_Ioctl` around every `write`/`read`/`dmspi_ioctl_cmd_transfer` call:
+device; dmspi asserts/deasserts it via `Dmod_Ioctl` around every
+`write`/`read`/`dmspi_ioctl_cmd_transfer` call.
+
+The path must be the pin's real `dmdevfs` path, confirmed on real
+hardware to be `/dev/dmgpio<port_index>/<section_name>` (`port_index`:
+A=0, B=1, ... - e.g. a pin on PA4 named `[flash_cs]` ends up at
+`/dev/dmgpio0/flash_cs`), **not** a flat `/dev/<section_name>`.
+
+dmspi does **not** open `cs_path` at device-creation time - only lazily, on
+the first actual transfer. This matters if your `dmspi` section is itself
+part of `dmdevfs`'s initial boot-time config scan (the normal case, e.g.
+via `configs/board/.../*.ini`): at that point in boot, `dmdevfs`'s own
+`/dev` mount isn't marked ready yet, so `Dmod_FileOpen()` on *any* other
+`/dev` path - including a perfectly correct `cs_path` - fails during that
+window (confirmed on real STM32F746G-DISCO hardware: opening the exact
+same path from an interactive shell afterwards works fine). Opening
+lazily instead, on first use, sidesteps this entirely, since by the time
+anything actually transfers data, boot has long finished.
 
 ```ini
 ; The GPIO pin itself, as a normal standalone dmgpio device
@@ -59,7 +75,7 @@ instance=1
 role=master
 baudrate=4000000
 mode=0
-cs_path=/dev/flash_cs
+cs_path=/dev/dmgpio0/flash_cs
 cs_active_level=low
 ```
 
@@ -84,7 +100,7 @@ role=master
 baudrate=1000000
 mode=0
 nss_mode=soft
-cs_path=/dev/flash_cs
+cs_path=/dev/dmgpio0/flash_cs
 ```
 
 ### Master talking to a device that needs mode 3
@@ -149,9 +165,9 @@ build-tested tool built this way (it takes a device path, reads its role
 back, and runs the appropriate side of a loopback test - no config or pins
 guessed or hardcoded).
 
-Chip-select is not managed by dmspi in `nss_mode=soft` (the common case for
-multi-slave master setups) - toggle a `dmgpio` pin around each transaction
-instead.
+`spitest` itself doesn't set `cs_path` (it talks to a peer board or a
+loopback pair, not a fixed slave device), so it doesn't demonstrate CS
+management - see "Chip select" above for that.
 
 ## Usage without dmdevfs (advanced)
 

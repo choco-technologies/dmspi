@@ -75,14 +75,17 @@ The SPI peripheral itself never drives chip-select (`nss_mode` stays
 plain `dmgpio` pin rather than a native NSS signal. Every file below
 configures the relevant CS pin as its own standalone `dmgpio` device
 (`[..._cs]`, declared *before* the `dmspi` section that needs it) and
-references it from the `dmspi` section's `cs_path`, so dmspi opens that
-device and asserts/deasserts it automatically around each transfer - see
+references it from the `dmspi` section's `cs_path`, so dmspi
+asserts/deasserts it automatically around each transfer - see
 [docs/configuration.md](../docs/configuration.md)'s "Chip select" section
-for exactly how. On the four generic Arduino-header boards this assumes a
-single shield device wired to D10 (the Arduino-standard CS pin); on the
-accelerometer/gyroscope boards it's the one fixed onboard device. If your
-setup doesn't match either (multiple slaves, a shield that manages its own
-CS, ...), drop `cs_path` from the `dmspi` section and manage CS yourself.
+for exactly how (including the `/dev/dmgpio<port_index>/<name>` path
+format - confirmed on real hardware, **not** a flat `/dev/<name>`) and why
+it's opened lazily rather than at boot. On the four generic Arduino-header
+boards this assumes a single shield device wired to D10 (the
+Arduino-standard CS pin); on the accelerometer/gyroscope boards it's the
+one fixed onboard device. If your setup doesn't match either (multiple
+slaves, a shield that manages its own CS, ...), drop `cs_path` from the
+`dmspi` section and manage CS yourself.
 
 ### Example (nucleo-f401re/spi1.ini)
 
@@ -133,7 +136,7 @@ baudrate=1000000
 mode=0
 bit_order=msb_first
 nss_mode=soft
-cs_path=/dev/arduino_spi_cs
+cs_path=/dev/dmgpio1/arduino_spi_cs
 cs_active_level=low
 ```
 
