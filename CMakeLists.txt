@@ -67,6 +67,13 @@ dmod_add_library(${DMOD_MODULE_NAME} ${DMOD_MODULE_VERSION}
     src/dmspi.c
 )
 
+dmod_link_modules(${DMOD_MODULE_NAME}
+    dmdrvi
+    dmini
+    dmhaman
+    dm_sw_ring
+)
+
 target_include_directories(${DMOD_MODULE_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
@@ -75,12 +82,16 @@ target_include_directories(${DMOD_MODULE_NAME}_if INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-# To depend on another module's headers, use:
-#   dmod_link_modules(${DMOD_MODULE_NAME}
-#       other_module@1.0
-#   )
-
 add_subdirectory(src/port)
 target_link_libraries(${DMOD_MODULE_NAME} ${DMOD_MODULE_NAME}_port_if)
 enable_testing()
 add_subdirectory(tests)
+
+# ======================================================================
+#               spitest Tool
+# ======================================================================
+# Manual device test tool - flashed onto a real board to exercise a real
+# master<->slave SPI link against an already-dmdevfs-configured device (see
+# tools/spitest/README.md). Not part of the ctest suite: it needs real
+# hardware, a dmdevfs config, and a human to wire it up.
+add_subdirectory(tools/spitest)

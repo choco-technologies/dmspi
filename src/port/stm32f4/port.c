@@ -7,29 +7,27 @@
 
 int dmod_init(const Dmod_Config_t *Config)
 {
-    Dmod_Printf("dmspi port module initialized (stm32f7)\n");
+    Dmod_Printf("dmspi port module initialized (stm32f4)\n");
     stm32_spi_common_init();
     return 0;
 }
 
 int dmod_deinit(void)
 {
-    Dmod_Printf("dmspi port module deinitialized (stm32f7)\n");
+    Dmod_Printf("dmspi port module deinitialized (stm32f4)\n");
     stm32_spi_common_deinit();
     return 0;
 }
 
 /* ---- Family-specific register quirk ----
  *
- * STM32F7 implements the newer FIFO-capable SPI IP: data size is selected
- * via CR2.DS[3:0] instead of CR1.DFF, and RXNE only asserts once the RX
- * FIFO reaches the threshold configured by CR2.FRXTH (default: 16-bit /
- * half-full). This driver only ever moves 8-bit frames, so FRXTH must be
- * set to get a per-byte RXNE like STM32F4's classic SPI IP already gives
- * for free. */
+ * STM32F4 implements the classic SPI IP: data size is selected via
+ * CR1.DFF (0 = 8-bit, 1 = 16-bit) and RXNE always asserts per-byte, so
+ * this driver's 8-bit-only operation just needs DFF defensively cleared -
+ * there is no FIFO/threshold to configure like on F7. */
 void stm32_spi_family_configure_frame_format(volatile stm32_spi_t *SPI)
 {
-    SPI->CR2 = (SPI->CR2 & ~STM32_SPI_CR2_DS_Msk) | STM32_SPI_CR2_DS_8BIT | STM32_SPI_CR2_FRXTH;
+    SPI->CR1 &= ~STM32_SPI_CR1_DFF;
 }
 
 /* ---- IRQ handlers ---- */
