@@ -72,20 +72,17 @@ first).
 
 The SPI peripheral itself never drives chip-select (`nss_mode` stays
 `soft` throughout this directory) - dmspi still manages it, just as a
-plain `dmgpio` pin rather than a native NSS signal. Every file below
-configures the relevant CS pin as its own standalone `dmgpio` device
-(`[..._cs]`, declared *before* the `dmspi` section that needs it) and
-references it from the `dmspi` section's `cs_path`, so dmspi
-asserts/deasserts it automatically around each transfer - see
+plain GPIO pin rather than a native NSS signal. Every `dmspi` section
+below names its CS pin directly via `cs_pin` (e.g. `cs_pin=PB6`); dmspi
+claims and configures that pin itself through dmgpio's pin-lease API, so
+there's no separate `dmgpio` section to declare for it - see
 [docs/configuration.md](../docs/configuration.md)'s "Chip select" section
-for exactly how (including the `/dev/dmgpio<port_index>/<name>` path
-format - confirmed on real hardware, **not** a flat `/dev/<name>`) and why
-it's opened lazily rather than at boot. On the four generic Arduino-header
-boards this assumes a single shield device wired to D10 (the
-Arduino-standard CS pin); on the accelerometer/gyroscope boards it's the
-one fixed onboard device. If your setup doesn't match either (multiple
-slaves, a shield that manages its own CS, ...), drop `cs_path` from the
-`dmspi` section and manage CS yourself.
+for exactly how. On the four generic Arduino-header boards this assumes a
+single shield device wired to D10 (the Arduino-standard CS pin); on the
+accelerometer/gyroscope boards it's the one fixed onboard device. If your
+setup doesn't match either (multiple slaves, a shield that manages its
+own CS, ...), drop `cs_pin` from the `dmspi` section and manage CS
+yourself.
 
 ### Example (nucleo-f401re/spi1.ini)
 
@@ -118,15 +115,6 @@ speed=maximum
 output_circuit=push_pull
 pull=none
 
-[arduino_spi_cs]
-driver_name=dmgpio
-driver_order=3
-pin=PB6
-mode=output
-pull=up
-speed=maximum
-output_circuit=push_pull
-
 [arduino_spi]
 driver_name=dmspi
 driver_order=3
@@ -136,13 +124,13 @@ baudrate=1000000
 mode=0
 bit_order=msb_first
 nss_mode=soft
-cs_path=/dev/dmgpio1/arduino_spi_cs
+cs_pin=PB6
 cs_active_level=low
 ```
 
 ## Board Configurations
 
-| Board | Folder | SPI Instance | Pins | CS (`cs_path` wired) | Source | Notes |
+| Board | Folder | SPI Instance | Pins | CS (`cs_pin`) | Source | Notes |
 |-------|--------|---------------|------|------------------------|--------|-------|
 | NUCLEO-F401RE | `board/nucleo-f401re/` | SPI1 | PA5/PA6/PA7 | D10=PB6 | UM1724 | Arduino Uno V3 header (D13/D12/D11) |
 | NUCLEO-F411RE | `board/nucleo-f411re/` | SPI1 | PA5/PA6/PA7 | D10=PB6 | UM1724 | Arduino Uno V3 header (D13/D12/D11) |

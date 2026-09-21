@@ -6,6 +6,7 @@
 #include "dmhaman.h"
 #include "dmini.h"
 #include "dm_sw_ring.h"
+#include "dmgpio_lease.h"
 #include <errno.h>
 #include <string.h>
 
@@ -18,29 +19,33 @@
  * design, since a single soft-NSS bus can have many slaves, each with its
  * own CS line, and only the caller knows which one applies to a given
  * transaction. For the common case of ONE fixed slave device, this driver
- * can still drive that CS line automatically: point the config's cs_path
- * at a separately dmdevfs-configured dmgpio output pin (see
- * configs/README.md) and this driver asserts it around every
- * _write/_read/transfer-ioctl call in master mode, deasserting it again
- * once the transfer completes. It is ignored for role=slave - a slave
- * never drives its own CS.
+ * can still drive that CS line automatically: cs_pin names a GPIO pin
+ * (e.g. "PE3" - same syntax as pin= in a dmgpio board-config section) and
+ * this driver asserts it around every _write/_read/transfer-ioctl call in
+ * master mode, deasserting it again once the transfer completes. Ignored
+ * for role=slave - a slave never drives its own CS.
  *
- * This goes through dmgpio's own dmdrvi device (Dmod_FileOpen on its
- * dmdevfs path + Dmod_Ioctl), not a direct dependency on the dmgpio
- * module: every published dmgpio release (v0.6 through v0.8.0, checked by
- * hand) is missing its .dmr resource file, so dmf-get cannot fetch
- * dmgpio_types.h through the normal dmod_link_modules path here.
- * DMGPIO_IOCTL_CMD_SET_PINS_STATE and DMGPIO_PINS_STATE_ALL_{LOW,HIGH}
- * below are copied from that header's dmgpio_ioctl_cmd_t/
- * dmgpio_pins_state_t enums - read directly from the sibling dmgpio
- * checkout (../dmgpio/include/dmgpio_types.h) rather than assumed, and
- * stable/small ordinal values dmgpio can't change without breaking its
- * own ABI. Replace this with a real #include "dmgpio_types.h" plus
- * dmod_link_modules(dmspi dmgpio) once dmgpio's packaging is fixed
- * upstream. */
-#define DMGPIO_IOCTL_CMD_SET_PINS_STATE   1
-#define DMGPIO_PINS_STATE_ALL_LOW         0
-#define DMGPIO_PINS_STATE_ALL_HIGH        1
+ * The pin is claimed through dmgpio's lease API (dmgpio_lease.h,
+ * dmod_dmgpio_api _pin_acquire/_release/_write) - a direct Built-in API
+ * dependency (dmod_link_modules(dmspi dmgpio), see CMakeLists.txt),
+ * resolved by the loader at module-load time. That replaces an earlier
+ * cs_path design (a dmdevfs /dev path, opened lazily via Dmod_FileOpen/
+ * Dmod_Ioctl against hardcoded dmgpio ioctl constants) and fixes what was
+ * wrong with it:
+ *   - no dmdevfs path format to get right (port-index-in-path etc) -
+ *     cs_pin reuses the exact "PA5" syntax every other pin= in these
+ *     config files already uses;
+ *   - no hardcoded copy of dmgpio's ioctl ABI - the lease functions are
+ *     real, typed, linked declarations;
+ *   - no boot-ordering hazard - dmgpio_pin_acquire() is a declared module
+ *     dependency, not a runtime /dev lookup, so it can run straight from
+ *     _create() and a failure (e.g. -EBUSY, the pin already leased to
+ *     another driver) surfaces immediately at config time instead of
+ *     silently on first transfer.
+ * The lease also owns pin configuration itself (mode/speed/output type/
+ * initial level), so cs_pin replaces the separate dmgpio [xxx_cs] board-
+ * config section entirely - see configs/README.md.
+ */
 
 /**
  * @brief DMDRVI context structure
@@ -53,58 +58,20 @@ struct dmdrvi_context
     dm_sw_ring_t         rx_ring;                /**< Software ring buffer for received bytes */
     uint32_t             rx_ring_size;           /**< Capacity of the RX ring buffer (from config) */
     dm_sw_ring_flags_t   rx_ring_wait_flags;     /**< RX ring read-wait behavior (from config) */
-    char                *cs_path;                /**< CS pin device path (NULL = unmanaged); see cs_ensure_open() */
-    void                *cs_fp;                  /**< dmgpio device handle for the CS pin, opened lazily */
+    dmgpio_lease_t       cs_lease;               /**< CS pin lease (NULL = unmanaged) */
     bool                 cs_active_high;         /**< true = assert by driving the pin high instead of low */
-    bool                 cs_open_failed;         /**< true once a failed lazy-open has been logged (avoid log spam) */
 };
-
-static void cs_deassert(dmdrvi_context_t context)
-{
-    if (context->cs_fp == NULL)
-        return;
-    int state = context->cs_active_high ? DMGPIO_PINS_STATE_ALL_LOW : DMGPIO_PINS_STATE_ALL_HIGH;
-    Dmod_Ioctl(context->cs_fp, DMGPIO_IOCTL_CMD_SET_PINS_STATE, &state);
-}
-
-/**
- * @brief Open context->cs_path on first use, caching the handle.
- *
- * Deliberately NOT opened at _create() time: _create() can run as part of
- * dmdevfs's initial boot-time config scan, before dmdevfs's own /dev mount
- * is marked "ready" (see dmfsi_dmdevfs_mounted() in dmdevfs.c) -
- * Dmod_FileOpen() on another /dev path fails during that window even for a
- * perfectly valid path (confirmed on real STM32F746G-DISCO hardware: the
- * exact same path that fails during boot opens fine once queried
- * afterwards, e.g. from an interactive shell). By the time a caller
- * actually transfers data, boot has long finished, so opening here instead
- * of at create time sidesteps the ordering problem entirely.
- */
-static bool cs_ensure_open(dmdrvi_context_t context)
-{
-    if (context->cs_fp != NULL)
-        return true;
-    if (context->cs_path == NULL || context->cs_open_failed)
-        return false;
-
-    context->cs_fp = Dmod_FileOpen(context->cs_path, "r+");
-    if (context->cs_fp == NULL)
-    {
-        DMOD_LOG_ERROR("Failed to open CS pin device '%s'\n", context->cs_path);
-        context->cs_open_failed = true;
-        return false;
-    }
-
-    cs_deassert(context); /* start deselected */
-    return true;
-}
 
 static void cs_assert(dmdrvi_context_t context)
 {
-    if (!cs_ensure_open(context))
-        return;
-    int state = context->cs_active_high ? DMGPIO_PINS_STATE_ALL_HIGH : DMGPIO_PINS_STATE_ALL_LOW;
-    Dmod_Ioctl(context->cs_fp, DMGPIO_IOCTL_CMD_SET_PINS_STATE, &state);
+    if (context->cs_lease != NULL)
+        dmgpio_pin_write(context->cs_lease, context->cs_active_high);
+}
+
+static void cs_deassert(dmdrvi_context_t context)
+{
+    if (context->cs_lease != NULL)
+        dmgpio_pin_write(context->cs_lease, !context->cs_active_high);
 }
 
 static int is_valid_context(dmdrvi_context_t context)
@@ -185,6 +152,29 @@ static dm_sw_ring_flags_t string_to_rx_ring_wait_flags(const char *s)
         if (strcmp(s, "all_data") == 0) return dm_sw_ring_flags_wait_for_all_data;
     }
     return dm_sw_ring_flags_wait_for_some_data;
+}
+
+/**
+ * @brief Parse "P<port><index>" (e.g. "PE3") into dmgpio's pin encoding
+ * (port*16 + index, see dmgpio_lease.h) - the same syntax already used by
+ * pin= in a dmgpio board-config section. Returns -1 on a malformed string.
+ */
+static int string_to_gpio_pin(const char *s)
+{
+    if (s == NULL || s[0] != 'P' || s[1] < 'A' || s[1] > 'K' || s[2] == '\0')
+        return -1;
+
+    int index = 0;
+    for (const char *p = s + 2; *p != '\0'; p++)
+    {
+        if (*p < '0' || *p > '9')
+            return -1;
+        index = index * 10 + (*p - '0');
+        if (index > 15)
+            return -1;
+    }
+
+    return (int)(s[1] - 'A') * 16 + index;
 }
 
 /* ---- Configuration ---- */
@@ -336,37 +326,48 @@ static int read_config_parameters(dmdrvi_context_t context, dmini_context_t conf
 }
 
 /**
- * @brief Record the CS pin device path named by 'cs_path', if configured.
+ * @brief Claim and configure the CS pin named by 'cs_pin', if configured.
  *
- * Does not open it - see cs_ensure_open()'s comment for why that has to
- * wait until first use. Requires context->config.role to already be set
- * (read_config_parameters() must run first). A no-op (returns 0) when
- * cs_path is absent, or when role=slave (a slave never drives its own CS -
- * see the file header comment on CS management).
+ * Requires context->config.role to already be set (read_config_parameters()
+ * must run first). A no-op (returns 0) when cs_pin is absent, or when
+ * role=slave (a slave never drives its own CS - see the file header
+ * comment on CS management). Fails outright - and so fails _create() - if
+ * cs_pin is present but malformed, or if the pin can't be claimed (e.g.
+ * already leased to another driver).
  */
 static int setup_cs_pin(dmdrvi_context_t context, dmini_context_t config)
 {
     char section_buf[64];
     const char *section = detect_config_section(config, section_buf, sizeof(section_buf));
 
-    const char *cs_path = dmini_get_string(config, section, "cs_path", NULL);
-    if (cs_path == NULL)
+    const char *cs_pin_str = dmini_get_string(config, section, "cs_pin", NULL);
+    if (cs_pin_str == NULL)
         return 0;
 
     if (context->config.role != dmspi_role_master)
     {
-        DMOD_LOG_ERROR("'cs_path' is ignored for role=slave (a slave never drives its own CS)\n");
+        DMOD_LOG_ERROR("'cs_pin' is ignored for role=slave (a slave never drives its own CS)\n");
         return 0;
+    }
+
+    int pin = string_to_gpio_pin(cs_pin_str);
+    if (pin < 0)
+    {
+        DMOD_LOG_ERROR("Invalid 'cs_pin' value '%s' (expected e.g. \"PE3\")\n", cs_pin_str);
+        return -EINVAL;
     }
 
     context->cs_active_high = (strcmp(
         dmini_get_string(config, section, "cs_active_level", "low"), "high") == 0);
 
-    context->cs_path = Dmod_StrDup(cs_path);
-    if (context->cs_path == NULL)
+    /* Preload deasserted; mode/af are the only settings this plain output
+     * pin needs, edge/user are unused (no interrupt). */
+    int ret = dmgpio_pin_acquire((int16_t)pin, dmgpio_mode_output, 0,
+                                  !context->cs_active_high, NULL, NULL, &context->cs_lease);
+    if (ret != 0)
     {
-        DMOD_LOG_ERROR("Failed to allocate CS pin path\n");
-        return -ENOMEM;
+        DMOD_LOG_ERROR("Failed to claim CS pin '%s' (%d) - already in use?\n", cs_pin_str, ret);
+        return ret;
     }
 
     return 0;
@@ -522,7 +523,8 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmspi, dmdrvi_context_t, _create, ( dmini_c
         configure(context) != 0)
     {
         DMOD_LOG_ERROR("Failed to create DMDRVI context with provided configuration\n");
-        Dmod_Free(context->cs_path);
+        if (context->cs_lease != NULL)
+            dmgpio_pin_release(context->cs_lease);
         Dmod_Free(context->interrupt_handler_name);
         Dmod_Free(context);
         return NULL;
@@ -597,13 +599,12 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmspi, void, _free, ( dmdrvi_context_t cont
             context->rx_ring = NULL;
         }
 
-        if (context->cs_fp != NULL)
+        if (context->cs_lease != NULL)
         {
             cs_deassert(context);
-            Dmod_FileClose(context->cs_fp);
-            context->cs_fp = NULL;
+            dmgpio_pin_release(context->cs_lease);
+            context->cs_lease = NULL;
         }
-        Dmod_Free(context->cs_path);
 
         Dmod_Free(context->interrupt_handler_name);
         dmspi_port_deinit(context->config.instance);
