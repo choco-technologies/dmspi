@@ -6,7 +6,7 @@
 #include "dmhaman.h"
 #include "dmini.h"
 #include "dm_sw_ring.h"
-#include "dmgpio_lease.h"
+#include "dmgpio_types.h"
 #include <errno.h>
 #include <string.h>
 
@@ -15,36 +15,11 @@
 
 /* ---- Chip-select (CS/NSS) management ----
  *
- * nss_mode=soft leaves NSS entirely unmanaged by the SPI peripheral - by
- * design, since a single soft-NSS bus can have many slaves, each with its
- * own CS line, and only the caller knows which one applies to a given
- * transaction. For the common case of ONE fixed slave device, this driver
- * can still drive that CS line automatically: cs_pin names a GPIO pin
- * (e.g. "PE3" - same syntax as pin= in a dmgpio board-config section) and
- * this driver asserts it around every _write/_read/transfer-ioctl call in
- * master mode, deasserting it again once the transfer completes. Ignored
- * for role=slave - a slave never drives its own CS.
- *
- * The pin is claimed through dmgpio's lease API (dmgpio_lease.h,
- * dmod_dmgpio_api _pin_acquire/_release/_write) - a direct Built-in API
- * dependency (dmod_link_modules(dmspi dmgpio), see CMakeLists.txt),
- * resolved by the loader at module-load time. That replaces an earlier
- * cs_path design (a dmdevfs /dev path, opened lazily via Dmod_FileOpen/
- * Dmod_Ioctl against hardcoded dmgpio ioctl constants) and fixes what was
- * wrong with it:
- *   - no dmdevfs path format to get right (port-index-in-path etc) -
- *     cs_pin reuses the exact "PA5" syntax every other pin= in these
- *     config files already uses;
- *   - no hardcoded copy of dmgpio's ioctl ABI - the lease functions are
- *     real, typed, linked declarations;
- *   - no boot-ordering hazard - dmgpio_pin_acquire() is a declared module
- *     dependency, not a runtime /dev lookup, so it can run straight from
- *     _create() and a failure (e.g. -EBUSY, the pin already leased to
- *     another driver) surfaces immediately at config time instead of
- *     silently on first transfer.
- * The lease also owns pin configuration itself (mode/speed/output type/
- * initial level), so cs_pin replaces the separate dmgpio [xxx_cs] board-
- * config section entirely - see configs/README.md.
+ * A software-controlled CS is a separate dmgpio device in the same
+ * friends_group as this SPI device, with friend_role=chip_select. dmdevfs
+ * reports the GPIO's node path through dmdrvi_friend_changed(). We retain a
+ * copy of that path and drive the pin through the filesystem around each
+ * master transfer. dmdevfs owns GPIO creation, configuration, and lifetime.
  */
 
 /**
@@ -58,20 +33,40 @@ struct dmdrvi_context
     dm_sw_ring_t         rx_ring;                /**< Software ring buffer for received bytes */
     uint32_t             rx_ring_size;           /**< Capacity of the RX ring buffer (from config) */
     dm_sw_ring_flags_t   rx_ring_wait_flags;     /**< RX ring read-wait behavior (from config) */
-    dmgpio_lease_t       cs_lease;               /**< CS pin lease (NULL = unmanaged) */
+    char                 *cs_path;                /**< Friend GPIO path (NULL = unmanaged) */
     bool                 cs_active_high;         /**< true = assert by driving the pin high instead of low */
 };
 
+static void cs_set_active(dmdrvi_context_t context, bool active)
+{
+    if (context->cs_path == NULL || context->config.nss_mode != dmspi_nss_mode_soft)
+        return;
+
+    bool high = (active == context->cs_active_high);
+    dmgpio_pins_state_t state = high
+        ? dmgpio_pins_state_all_high
+        : dmgpio_pins_state_all_low;
+
+    void *file = Dmod_FileOpen(context->cs_path, "r+");
+    if (file == NULL)
+    {
+        DMOD_LOG_ERROR("Failed to open chip-select GPIO: %s\n", context->cs_path);
+        return;
+    }
+
+    if (Dmod_Ioctl(file, dmgpio_ioctl_cmd_set_pins_state, &state) != 0)
+        DMOD_LOG_ERROR("Failed to update chip-select GPIO: %s\n", context->cs_path);
+    Dmod_FileClose(file);
+}
+
 static void cs_assert(dmdrvi_context_t context)
 {
-    if (context->cs_lease != NULL)
-        dmgpio_pin_write(context->cs_lease, context->cs_active_high);
+    cs_set_active(context, true);
 }
 
 static void cs_deassert(dmdrvi_context_t context)
 {
-    if (context->cs_lease != NULL)
-        dmgpio_pin_write(context->cs_lease, !context->cs_active_high);
+    cs_set_active(context, false);
 }
 
 static int is_valid_context(dmdrvi_context_t context)
@@ -152,29 +147,6 @@ static dm_sw_ring_flags_t string_to_rx_ring_wait_flags(const char *s)
         if (strcmp(s, "all_data") == 0) return dm_sw_ring_flags_wait_for_all_data;
     }
     return dm_sw_ring_flags_wait_for_some_data;
-}
-
-/**
- * @brief Parse "P<port><index>" (e.g. "PE3") into dmgpio's pin encoding
- * (port*16 + index, see dmgpio_lease.h) - the same syntax already used by
- * pin= in a dmgpio board-config section. Returns -1 on a malformed string.
- */
-static int string_to_gpio_pin(const char *s)
-{
-    if (s == NULL || s[0] != 'P' || s[1] < 'A' || s[1] > 'K' || s[2] == '\0')
-        return -1;
-
-    int index = 0;
-    for (const char *p = s + 2; *p != '\0'; p++)
-    {
-        if (*p < '0' || *p > '9')
-            return -1;
-        index = index * 10 + (*p - '0');
-        if (index > 15)
-            return -1;
-    }
-
-    return (int)(s[1] - 'A') * 16 + index;
 }
 
 /* ---- Configuration ---- */
@@ -314,6 +286,8 @@ static int read_config_parameters(dmdrvi_context_t context, dmini_context_t conf
     context->config.nss_mode    = string_to_nss_mode(dmini_get_string(config, section, "nss_mode", "soft"));
     context->config.interrupt_trigger = string_to_interrupt_trigger(dmini_get_string(config, section, "interrupt_trigger", "off"));
     context->config.interrupt_handler = NULL;
+    context->cs_active_high = (strcmp(
+        dmini_get_string(config, section, "cs_active_level", "low"), "high") == 0);
 
     const char *handler_name = dmini_get_string(config, section, "interrupt_handler", NULL);
     context->interrupt_handler_name = (handler_name != NULL) ? Dmod_StrDup(handler_name) : NULL;
@@ -323,54 +297,6 @@ static int read_config_parameters(dmdrvi_context_t context, dmini_context_t conf
         dmini_get_string(config, section, "rx_ring_wait_mode", "some_data"));
 
     return check_config_parameters(&context->config);
-}
-
-/**
- * @brief Claim and configure the CS pin named by 'cs_pin', if configured.
- *
- * Requires context->config.role to already be set (read_config_parameters()
- * must run first). A no-op (returns 0) when cs_pin is absent, or when
- * role=slave (a slave never drives its own CS - see the file header
- * comment on CS management). Fails outright - and so fails _create() - if
- * cs_pin is present but malformed, or if the pin can't be claimed (e.g.
- * already leased to another driver).
- */
-static int setup_cs_pin(dmdrvi_context_t context, dmini_context_t config)
-{
-    char section_buf[64];
-    const char *section = detect_config_section(config, section_buf, sizeof(section_buf));
-
-    const char *cs_pin_str = dmini_get_string(config, section, "cs_pin", NULL);
-    if (cs_pin_str == NULL)
-        return 0;
-
-    if (context->config.role != dmspi_role_master)
-    {
-        DMOD_LOG_ERROR("'cs_pin' is ignored for role=slave (a slave never drives its own CS)\n");
-        return 0;
-    }
-
-    int pin = string_to_gpio_pin(cs_pin_str);
-    if (pin < 0)
-    {
-        DMOD_LOG_ERROR("Invalid 'cs_pin' value '%s' (expected e.g. \"PE3\")\n", cs_pin_str);
-        return -EINVAL;
-    }
-
-    context->cs_active_high = (strcmp(
-        dmini_get_string(config, section, "cs_active_level", "low"), "high") == 0);
-
-    /* Preload deasserted; mode/af are the only settings this plain output
-     * pin needs, edge/user are unused (no interrupt). */
-    int ret = dmgpio_pin_acquire((int16_t)pin, dmgpio_mode_output, 0,
-                                  !context->cs_active_high, NULL, NULL, &context->cs_lease);
-    if (ret != 0)
-    {
-        DMOD_LOG_ERROR("Failed to claim CS pin '%s' (%d) - already in use?\n", cs_pin_str, ret);
-        return ret;
-    }
-
-    return 0;
 }
 
 /**
@@ -518,13 +444,9 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmspi, dmdrvi_context_t, _create, ( dmini_c
     memset(context, 0, sizeof(*context));
     context->magic = DMSPI_CONTEXT_MAGIC;
 
-    if (read_config_parameters(context, config) != 0 ||
-        setup_cs_pin(context, config) != 0 ||
-        configure(context) != 0)
+    if (read_config_parameters(context, config) != 0 || configure(context) != 0)
     {
         DMOD_LOG_ERROR("Failed to create DMDRVI context with provided configuration\n");
-        if (context->cs_lease != NULL)
-            dmgpio_pin_release(context->cs_lease);
         Dmod_Free(context->interrupt_handler_name);
         Dmod_Free(context);
         return NULL;
@@ -599,18 +521,45 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmspi, void, _free, ( dmdrvi_context_t cont
             context->rx_ring = NULL;
         }
 
-        if (context->cs_lease != NULL)
-        {
-            cs_deassert(context);
-            dmgpio_pin_release(context->cs_lease);
-            context->cs_lease = NULL;
-        }
-
+        /* Do not access the CS node here. Its section is declared after dmspi,
+         * so dmdevfs tears the GPIO down first (reverse order). Every completed
+         * transfer has already left CS deasserted. */
+        Dmod_Free(context->cs_path);
         Dmod_Free(context->interrupt_handler_name);
         dmspi_port_deinit(context->config.instance);
         context->magic = 0;
         Dmod_Free(context);
     }
+}
+
+dmod_dmdrvi_dif_api_declaration(1.0, dmspi, void, _friend_changed,
+    ( dmdrvi_context_t context, const dmdrvi_friend_info_t* info ))
+{
+    if (!is_valid_context(context) || info == NULL || info->friend_role == NULL ||
+        strcmp(info->friend_role, "chip_select") != 0 ||
+        context->config.role != dmspi_role_master ||
+        context->config.nss_mode != dmspi_nss_mode_soft)
+    {
+        return;
+    }
+
+    if (info->state != dmdrvi_dev_state_ready || info->node_path == NULL)
+    {
+        Dmod_Free(context->cs_path);
+        context->cs_path = NULL;
+        return;
+    }
+
+    char *path = Dmod_StrDup(info->node_path);
+    if (path == NULL)
+    {
+        DMOD_LOG_ERROR("Failed to retain chip-select GPIO path\n");
+        return;
+    }
+
+    Dmod_Free(context->cs_path);
+    context->cs_path = path;
+    cs_deassert(context);
 }
 
 dmod_dmdrvi_dif_api_declaration(1.0, dmspi, void*, _open, ( dmdrvi_context_t context, int flags, const dmdrvi_dev_num_t *dev_num ))

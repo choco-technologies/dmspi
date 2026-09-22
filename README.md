@@ -20,10 +20,11 @@ write/ioctl/close), configured from an INI file via `dmini`. It supports:
   (useful for slave mode, where reception isn't driven by the local CPU)
 - True full-duplex transfers via `dmspi_ioctl_cmd_transfer`
 
-Like `dmuart`/`dmgpio`, dmspi only configures the SPI peripheral itself -
-pin muxing (SCK/MOSI/MISO/NSS alternate functions) is done externally via
-`dmgpio`, and in `nss_mode=soft` chip-select is a plain GPIO the caller
-toggles around each transaction.
+Like `dmuart`/`dmgpio`, dmspi only configures the SPI peripheral itself.
+Pin muxing is done externally via `dmgpio`; in `nss_mode=soft`, an optional
+GPIO in the same `friends_group` with `friend_role=chip_select` is discovered
+through `dmdevfs` and toggled with the public GPIO ioctl through its device
+path around each transaction.
 
 See [docs/configuration.md](docs/configuration.md) for the full
 configuration reference and a usage example, and

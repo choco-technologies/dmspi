@@ -39,6 +39,7 @@ callable by name from another module (see [configuration.md](configuration.md)).
 | `dmspi_validate_config(const dmspi_config_t*)` | Validate a config struct without touching hardware. Safe to call even when `dmspi_port` isn't loaded. |
 | `dmdrvi_dmspi_create(dmini_context_t, dmdrvi_dev_num_t*)` | Create a driver instance from an INI configuration. |
 | `dmdrvi_dmspi_free(dmdrvi_context_t)` | Destroy an instance created by `_create`. |
+| `dmdrvi_dmspi_friend_changed` | Track the dmdevfs path of a ready friend with `friend_role=chip_select`; clears it when the friend is no longer ready. |
 | `dmdrvi_dmspi_open` / `_close` | Open/close a handle on the device. |
 | `dmdrvi_dmspi_read` | Receive bytes - drains the RX ring if configured, otherwise blocks clocking dummy bytes (master) or waiting for the external master (slave). |
 | `dmdrvi_dmspi_write` | Transmit bytes (full duplex at the wire level; received bytes are discarded). |

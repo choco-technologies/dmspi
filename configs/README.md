@@ -60,36 +60,36 @@ Each board configuration file contains:
 - `[section]` entries with `driver_name=dmgpio` that mux the SCK/MISO/MOSI
   pins to the SPI peripheral's alternate function.
 - One `[section]` with `driver_name=dmspi` for the peripheral itself.
+- One `[section]` with `driver_name=dmgpio` and
+  `friend_role=chip_select` for software-controlled CS.
 
 `dmdevfs` scans a config file (or a whole directory of them) for sections
 declaring `driver_name`, dynamically resolves that module's `dmdrvi`
 interface (`Dmod_LoadModuleByName()` + `Dmod_GetDifFunction()` - see
 [docs/configuration.md](../docs/configuration.md)), and creates one device
-per section, ordered by `driver_order` (GPIO pin sections must land before
-the SPI section that depends on them, hence both use the same order here -
-declaration order within a `driver_order` group already puts the pins
-first).
+per section. These sections use `driver_order=2`, so they are configured after
+external RAM (`dmfmc` uses order 1). DMA may use the same order because dmspi
+does not currently depend on it. `dmdevfs` keeps declaration order stable
+within the group: signal GPIOs are configured first, then SPI, and finally its
+CS GPIO.
 
-The SPI peripheral itself never drives chip-select (`nss_mode` stays
-`soft` throughout this directory) - dmspi still manages it, just as a
-plain GPIO pin rather than a native NSS signal. Every `dmspi` section
-below names its CS pin directly via `cs_pin` (e.g. `cs_pin=PB6`); dmspi
-claims and configures that pin itself through dmgpio's pin-lease API, so
-there's no separate `dmgpio` section to declare for it - see
-[docs/configuration.md](../docs/configuration.md)'s "Chip select" section
-for exactly how. On the four generic Arduino-header boards this assumes a
-single shield device wired to D10 (the Arduino-standard CS pin); on the
-accelerometer/gyroscope boards it's the one fixed onboard device. If your
-setup doesn't match either (multiple slaves, a shield that manages its
-own CS, ...), drop `cs_pin` from the `dmspi` section and manage CS
-yourself.
+The SPI peripheral itself never drives chip-select (`nss_mode` stays `soft`
+throughout this directory). Every related section shares a `friends_group`.
+The separate CS GPIO carries `friend_role=chip_select`, allowing `dmdevfs` to
+report its generated path to dmspi; dmspi drives it through the filesystem
+using `dmgpio_ioctl_cmd_set_pins_state`.
+See [docs/configuration.md](../docs/configuration.md)'s "Chip select" section.
+On Arduino-header boards this assumes a single shield on D10; on the sensor
+boards it is the fixed onboard device. For multiple slaves or custom CS
+timing, omit the `chip_select` friend and manage CS externally.
 
 ### Example (nucleo-f401re/spi1.ini)
 
 ```ini
 [arduino_spi_sck]
 driver_name=dmgpio
-driver_order=3
+driver_order=2
+friends_group=arduino_spi
 pin=PA5
 mode=alternate
 alternate_function=5
@@ -99,7 +99,8 @@ pull=none
 
 [arduino_spi_miso]
 driver_name=dmgpio
-driver_order=3
+driver_order=2
+friends_group=arduino_spi
 pin=PA6
 mode=alternate
 alternate_function=5
@@ -107,7 +108,8 @@ pull=none
 
 [arduino_spi_mosi]
 driver_name=dmgpio
-driver_order=3
+driver_order=2
+friends_group=arduino_spi
 pin=PA7
 mode=alternate
 alternate_function=5
@@ -117,20 +119,31 @@ pull=none
 
 [arduino_spi]
 driver_name=dmspi
-driver_order=3
+driver_order=2
+friends_group=arduino_spi
 instance=1
 role=master
 baudrate=1000000
 mode=0
 bit_order=msb_first
 nss_mode=soft
-cs_pin=PB6
 cs_active_level=low
+
+[arduino_spi_cs]
+driver_name=dmgpio
+driver_order=2
+friends_group=arduino_spi
+friend_role=chip_select
+pin=PB6
+mode=output
+pull=up
+speed=maximum
+output_circuit=push_pull
 ```
 
 ## Board Configurations
 
-| Board | Folder | SPI Instance | Pins | CS (`cs_pin`) | Source | Notes |
+| Board | Folder | SPI Instance | Pins | CS GPIO friend | Source | Notes |
 |-------|--------|---------------|------|------------------------|--------|-------|
 | NUCLEO-F401RE | `board/nucleo-f401re/` | SPI1 | PA5/PA6/PA7 | D10=PB6 | UM1724 | Arduino Uno V3 header (D13/D12/D11) |
 | NUCLEO-F411RE | `board/nucleo-f411re/` | SPI1 | PA5/PA6/PA7 | D10=PB6 | UM1724 | Arduino Uno V3 header (D13/D12/D11) |
