@@ -1,32 +1,47 @@
 #define DMOD_ENABLE_REGISTRATION ON
 #include "dmod_test.h"
 #include "dmspi.h"
+#include <string.h>
 
-static dmspi_t g_handle = NULL;
+static dmspi_config_t g_config;
 
 void dmod_test_setup(void)
 {
-    g_handle = dmspi_create();
+    memset(&g_config, 0, sizeof(g_config));
+    g_config.instance = 1;
+    g_config.role     = dmspi_role_master;
+    g_config.baudrate = 1000000;
 }
 
 void dmod_test_teardown(void)
 {
-    dmspi_destroy(g_handle);
-    g_handle = NULL;
 }
 
-DMOD_TEST_STEP(dmspi_create)
+DMOD_TEST_STEP(dmspi_validate_config_accepts_valid_master)
 {
-    DMOD_TEST_EXPECT_NOT_NULL(g_handle);
+    DMOD_TEST_EXPECT_TRUE(dmspi_validate_config(&g_config));
 }
 
-DMOD_TEST_STEP(dmspi_is_valid)
+DMOD_TEST_STEP(dmspi_validate_config_rejects_zero_instance)
 {
-    DMOD_TEST_EXPECT_TRUE(dmspi_is_valid(g_handle));
+    g_config.instance = 0;
+    DMOD_TEST_EXPECT_FALSE(dmspi_validate_config(&g_config));
 }
 
-DMOD_TEST_STEP(dmspi_destroy_null)
+DMOD_TEST_STEP(dmspi_validate_config_rejects_master_without_baudrate)
 {
-    /* Destroying NULL must not crash. */
-    dmspi_destroy(NULL);
+    g_config.baudrate = 0;
+    DMOD_TEST_EXPECT_FALSE(dmspi_validate_config(&g_config));
+}
+
+DMOD_TEST_STEP(dmspi_validate_config_accepts_slave_without_baudrate)
+{
+    g_config.role     = dmspi_role_slave;
+    g_config.baudrate = 0;
+    DMOD_TEST_EXPECT_TRUE(dmspi_validate_config(&g_config));
+}
+
+DMOD_TEST_STEP(dmspi_validate_config_rejects_null)
+{
+    DMOD_TEST_EXPECT_FALSE(dmspi_validate_config(NULL));
 }
