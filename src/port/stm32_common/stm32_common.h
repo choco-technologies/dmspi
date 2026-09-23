@@ -8,9 +8,9 @@
 /**
  * @brief STM32 SPI register layout.
  *
- * Identical field layout on F4 and F7 (both implement the "SPI v1" IP
- * block - no FIFO). The only per-family differences are a handful of
- * CR1/CR2 bits, handled by stm32_spi_family_configure_frame_format().
+ * Identical register offsets on F4 and F7. STM32F7 adds FIFO/data-size
+ * behavior behind the same layout; those family-specific CR1/CR2 bits are
+ * handled by stm32_spi_family_configure_frame_format().
  */
 typedef struct
 {

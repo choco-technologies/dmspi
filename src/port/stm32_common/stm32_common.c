@@ -80,6 +80,26 @@ static volatile stm32_spi_t *get_spi(dmspi_instance_t instance)
     return (volatile stm32_spi_t *)stm32_spi_instances[instance - 1].base;
 }
 
+/* The access width to DR must match the configured frame size. In 8-bit
+ * mode a 32-bit store on FIFO-capable STM32 SPI blocks is interpreted as
+ * several packed frames, which fills RX FIFO and raises OVR immediately. */
+static void write_data_byte(volatile stm32_spi_t *SPI, uint8_t data)
+{
+    *(volatile uint8_t *)&SPI->DR = data;
+}
+
+static uint8_t read_data_byte(volatile stm32_spi_t *SPI)
+{
+    return *(volatile uint8_t *)&SPI->DR;
+}
+
+static void clear_receive_state(volatile stm32_spi_t *SPI)
+{
+    while (SPI->SR & STM32_SPI_SR_RXNE)
+        (void)read_data_byte(SPI);
+    (void)SPI->SR; /* DR then SR clears OVR. */
+}
+
 static void enable_spi_clock(dmspi_instance_t instance)
 {
     const stm32_spi_instance_desc_t *desc = &stm32_spi_instances[instance - 1];
@@ -154,6 +174,7 @@ dmod_dmspi_port_api_declaration(1.0, int, _transfer, ( dmspi_instance_t instance
     if (validate_instance(instance) != 0) return -1;
 
     volatile stm32_spi_t *SPI = get_spi(instance);
+    clear_receive_state(SPI);
 
     for (size_t i = 0; i < size; i++)
     {
@@ -162,7 +183,7 @@ dmod_dmspi_port_api_declaration(1.0, int, _transfer, ( dmspi_instance_t instance
         {
             if (--timeout == 0) return -1;
         }
-        SPI->DR = tx ? tx[i] : 0xFFU;
+        write_data_byte(SPI, tx ? tx[i] : 0xFFU);
 
         timeout = STM32_SPI_TIMEOUT_VALUE;
         while (!(SPI->SR & STM32_SPI_SR_RXNE))
@@ -170,8 +191,8 @@ dmod_dmspi_port_api_declaration(1.0, int, _transfer, ( dmspi_instance_t instance
             if (--timeout == 0) return -1;
         }
 
-        uint32_t sr = SPI->SR;
-        uint8_t byte = (uint8_t)(SPI->DR & 0xFFU); /* reading DR completes the OVR clear sequence too */
+        uint8_t byte = read_data_byte(SPI);
+        uint32_t sr = SPI->SR; /* DR then SR also clears a pending OVR. */
 
         if (sr & (STM32_SPI_SR_OVR | STM32_SPI_SR_MODF))
         {
@@ -222,7 +243,7 @@ dmod_dmspi_port_api_declaration(1.0, int, _receive, ( dmspi_instance_t instance,
         {
             if (--timeout == 0) return 0;
         }
-        SPI->DR = 0xFFU; /* dummy byte - keeps the clock/shift register moving */
+        write_data_byte(SPI, 0xFFU); /* dummy byte keeps the clock moving */
 
         timeout = STM32_SPI_TIMEOUT_VALUE;
         while (!(SPI->SR & STM32_SPI_SR_RXNE))
@@ -230,8 +251,8 @@ dmod_dmspi_port_api_declaration(1.0, int, _receive, ( dmspi_instance_t instance,
             if (--timeout == 0) return 0;
         }
 
+        data[i] = read_data_byte(SPI);
         uint32_t sr = SPI->SR;
-        data[i] = (uint8_t)(SPI->DR & 0xFFU);
 
         if (sr & (STM32_SPI_SR_OVR | STM32_SPI_SR_MODF))
         {
@@ -491,7 +512,7 @@ void stm32_spi_irq_handler(dmspi_instance_t instance)
 
     if (sr & STM32_SPI_SR_RXNE)
     {
-        data = (uint8_t)(SPI->DR & 0xFFU); /* reading DR clears RXNE (and completes an OVR clear) */
+        data = read_data_byte(SPI);
         trigger = (dmspi_int_trigger_t)(trigger | dmspi_int_trigger_rx_not_empty);
 
         if (rx_rings[idx] != NULL)
@@ -503,7 +524,8 @@ void stm32_spi_irq_handler(dmspi_instance_t instance)
         trigger = (dmspi_int_trigger_t)(trigger | dmspi_int_trigger_tx_empty);
     if (sr & (STM32_SPI_SR_OVR | STM32_SPI_SR_MODF))
     {
-        (void)SPI->DR;                   /* completes the OVR clear sequence */
+        (void)read_data_byte(SPI);
+        (void)SPI->SR;                   /* DR then SR clears OVR */
         SPI->CR1 |= STM32_SPI_CR1_SPE;   /* completes the MODF clear sequence */
         trigger = (dmspi_int_trigger_t)(trigger | dmspi_int_trigger_error);
     }

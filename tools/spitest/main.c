@@ -135,6 +135,34 @@ static int run_single(const char *path)
     return ok ? 0 : 1;
 }
 
+static int run_echo_loopback(const char *path)
+{
+    void *fp = open_device(path);
+    if (fp == NULL)
+        return -1;
+
+    dmspi_role_t role;
+    if (!query_role(fp, path, &role) || role != dmspi_role_master)
+    {
+        DMOD_LOG_ERROR("spitest: echo loopback requires a master device\n");
+        Dmod_FileClose(fp);
+        return -1;
+    }
+
+    uint8_t tx[TEST_PATTERN_LEN];
+    uint8_t rx[TEST_PATTERN_LEN] = {0};
+    build_mosi_pattern(tx);
+    dmspi_transfer_t xfer = { .tx = tx, .rx = rx, .size = TEST_PATTERN_LEN };
+    int ret = Dmod_Ioctl(fp, dmspi_ioctl_cmd_transfer, &xfer);
+    bool ok = ret == 0 && verify_pattern("MOSI->MISO echo", rx, tx, TEST_PATTERN_LEN);
+    if (ret != 0)
+        DMOD_LOG_ERROR("spitest: echo transfer failed (error %d)\n", ret);
+
+    Dmod_FileClose(fp);
+    Dmod_Printf("\n=== Echo loopback test ('%s'): %s ===\n", path, ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 /* ---- two devices on this board: one worker thread per side, so both
  *      run their (blocking) transfer at the same time ---- */
 
@@ -217,6 +245,7 @@ static int run_loopback(const char *path_a, const char *path_b)
 static void print_usage(const char *prog)
 {
     Dmod_Printf("Usage: %s <device_path> [peer_device_path]\n", prog);
+    Dmod_Printf("       %s --echo <device_path>\n", prog);
     Dmod_Printf("\n");
     Dmod_Printf("Exercises a real SPI transfer on an already-configured dmspi device -\n");
     Dmod_Printf("see ../../configs/README.md for how to get one via dmdevfs. The\n");
@@ -229,6 +258,7 @@ static void print_usage(const char *prog)
     Dmod_Printf("                      loopback test between the two - one must already be\n");
     Dmod_Printf("                      configured as master, the other as slave, and wired\n");
     Dmod_Printf("                      together with a cable.\n");
+    Dmod_Printf("  --echo              Test one master with MOSI physically connected to MISO.\n");
 }
 
 int main(int argc, char *argv[])
@@ -238,6 +268,9 @@ int main(int argc, char *argv[])
         print_usage(argv[0]);
         return (argc < 2) ? 1 : 0;
     }
+
+    if (strcmp(argv[1], "--echo") == 0)
+        return (argc >= 3 && run_echo_loopback(argv[2]) == 0) ? 0 : 1;
 
     if (argc >= 3)
         return (run_loopback(argv[1], argv[2]) == 0) ? 0 : 1;
