@@ -429,7 +429,7 @@ int dmod_deinit(void)
 
 /* ---- DMDRVI interface ---- */
 
-dmod_dmdrvi_dif_api_declaration(1.0, dmspi, dmdrvi_context_t, _create, ( dmini_context_t config, dmdrvi_dev_num_t* dev_num ))
+dmod_dmdrvi_dif_api_declaration(2.0, dmspi, dmdrvi_context_t, _create, ( dmini_context_t config, dmdrvi_dev_num_t* dev_num ))
 {
     if (config == NULL || dev_num == NULL)
     {
@@ -507,7 +507,7 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmspi, dmdrvi_context_t, _create, ( dmini_c
     return context;
 }
 
-dmod_dmdrvi_dif_api_declaration(1.0, dmspi, void, _free, ( dmdrvi_context_t context ))
+dmod_dmdrvi_dif_api_declaration(2.0, dmspi, void, _free, ( dmdrvi_context_t context ))
 {
     if (is_valid_context(context))
     {
@@ -532,7 +532,7 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmspi, void, _free, ( dmdrvi_context_t cont
     }
 }
 
-dmod_dmdrvi_dif_api_declaration(1.0, dmspi, void, _friend_changed,
+dmod_dmdrvi_dif_api_declaration(2.0, dmspi, void, _friend_changed,
     ( dmdrvi_context_t context, const dmdrvi_friend_info_t* info ))
 {
     if (!is_valid_context(context) || info == NULL || info->friend_role == NULL ||
@@ -562,7 +562,7 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmspi, void, _friend_changed,
     cs_deassert(context);
 }
 
-dmod_dmdrvi_dif_api_declaration(1.0, dmspi, void*, _open, ( dmdrvi_context_t context, int flags, const dmdrvi_dev_num_t *dev_num ))
+dmod_dmdrvi_dif_api_declaration(2.0, dmspi, void*, _open, ( dmdrvi_context_t context, int flags, const dmdrvi_dev_num_t *dev_num ))
 {
     if (!is_valid_context(context))
     {
@@ -572,18 +572,49 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmspi, void*, _open, ( dmdrvi_context_t con
     return context;
 }
 
-dmod_dmdrvi_dif_api_declaration(1.0, dmspi, void, _close, ( dmdrvi_context_t context, void* handle ))
+dmod_dmdrvi_dif_api_declaration(2.0, dmspi, void, _close, ( dmdrvi_context_t context, void* handle ))
 {
     /* No specific action needed to close the SPI device handle */
 }
 
-dmod_dmdrvi_dif_api_declaration(1.0, dmspi, size_t, _read, ( dmdrvi_context_t context, void* handle, void* buffer, size_t size, uint32_t offset ))
+/**
+ * @brief Read (receive) bytes over the SPI bus
+ *
+ * dmspi is transaction-like, not a seekable/addressable device - there is no
+ * byte offset into anything, so offset is only validated (must be
+ * non-negative) and otherwise ignored, matching how dmclk treats offset for
+ * its own non-seekable device.
+ *
+ * @param context DMDRVI context
+ * @param handle Device handle (unused - dmspi has a single implicit device per context)
+ * @param buffer Buffer to read data into
+ * @param size Number of bytes to read; values greater than INT64_MAX fail
+ * with -EOVERFLOW because they cannot be represented by dmdrvi_ssize_t
+ * @param offset Unused beyond validation (dmspi is not seekable); must be non-negative
+ *
+ * @return dmdrvi_ssize_t Number of bytes received, or a negative errno-compatible error
+ */
+dmod_dmdrvi_dif_api_declaration(2.0, dmspi, dmdrvi_ssize_t, _read, ( dmdrvi_context_t context, void* handle, void* buffer, size_t size, dmdrvi_offset_t offset ))
 {
+    if (offset < 0)
+    {
+        return -EINVAL;
+    }
+    if (size > (size_t)INT64_MAX)
+    {
+        return -EOVERFLOW;
+    }
     if (!is_valid_context(context) || buffer == NULL || size == 0)
         return 0;
 
     if (context->rx_ring != NULL)
-        return (size_t)dm_sw_ring_read(context->rx_ring, buffer, (dm_sw_ring_capacity_t)size);
+    {
+        /* dm_sw_ring's own interface caps a single transfer at
+         * dm_sw_ring_capacity_t (uint32_t) - clamp rather than truncate so a
+         * request larger than that does not silently wrap to a small value. */
+        dm_sw_ring_capacity_t ring_size = (size > (size_t)UINT32_MAX) ? UINT32_MAX : (dm_sw_ring_capacity_t)size;
+        return (dmdrvi_ssize_t)dm_sw_ring_read(context->rx_ring, buffer, ring_size);
+    }
 
     if (context->config.role == dmspi_role_master)
         cs_assert(context);
@@ -596,11 +627,36 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmspi, size_t, _read, ( dmdrvi_context_t co
 
     if (ret != 0)
         return 0;
-    return received;
+    return (dmdrvi_ssize_t)received;
 }
 
-dmod_dmdrvi_dif_api_declaration(1.0, dmspi, size_t, _write, ( dmdrvi_context_t context, void* handle, const void* buffer, size_t size, uint32_t offset ))
+/**
+ * @brief Write (transmit) bytes over the SPI bus
+ *
+ * dmspi is transaction-like, not a seekable/addressable device - there is no
+ * byte offset into anything, so offset is only validated (must be
+ * non-negative) and otherwise ignored, matching how dmclk treats offset for
+ * its own non-seekable device.
+ *
+ * @param context DMDRVI context
+ * @param handle Device handle (unused - dmspi has a single implicit device per context)
+ * @param buffer Buffer with data to write
+ * @param size Number of bytes to write; values greater than INT64_MAX fail
+ * with -EOVERFLOW because they cannot be represented by dmdrvi_ssize_t
+ * @param offset Unused beyond validation (dmspi is not seekable); must be non-negative
+ *
+ * @return dmdrvi_ssize_t Number of bytes transmitted, or a negative errno-compatible error
+ */
+dmod_dmdrvi_dif_api_declaration(2.0, dmspi, dmdrvi_ssize_t, _write, ( dmdrvi_context_t context, void* handle, const void* buffer, size_t size, dmdrvi_offset_t offset ))
 {
+    if (offset < 0)
+    {
+        return -EINVAL;
+    }
+    if (size > (size_t)INT64_MAX)
+    {
+        return -EOVERFLOW;
+    }
     if (!is_valid_context(context) || buffer == NULL || size == 0)
         return 0;
 
@@ -614,10 +670,10 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmspi, size_t, _write, ( dmdrvi_context_t c
 
     if (ret != 0)
         return 0;
-    return size;
+    return (dmdrvi_ssize_t)size;
 }
 
-dmod_dmdrvi_dif_api_declaration(1.0, dmspi, int, _ioctl, ( dmdrvi_context_t context, void* handle, int command, void* arg ))
+dmod_dmdrvi_dif_api_declaration(2.0, dmspi, int, _ioctl, ( dmdrvi_context_t context, void* handle, int command, void* arg ))
 {
     int ret = 0;
     if (!is_valid_context(context))
@@ -693,7 +749,7 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmspi, int, _ioctl, ( dmdrvi_context_t cont
     return ret;
 }
 
-dmod_dmdrvi_dif_api_declaration(1.0, dmspi, int, _flush, ( dmdrvi_context_t context, void* handle ))
+dmod_dmdrvi_dif_api_declaration(2.0, dmspi, int, _flush, ( dmdrvi_context_t context, void* handle ))
 {
     if (!is_valid_context(context))
     {
@@ -709,7 +765,7 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmspi, int, _flush, ( dmdrvi_context_t cont
     return 0;
 }
 
-dmod_dmdrvi_dif_api_declaration(1.0, dmspi, int, _stat, ( dmdrvi_context_t context, const char* path, dmdrvi_stat_t* stat ))
+dmod_dmdrvi_dif_api_declaration(2.0, dmspi, int, _stat, ( dmdrvi_context_t context, const char* path, dmdrvi_stat_t* stat ))
 {
     if (!is_valid_context(context) || stat == NULL)
     {
@@ -717,7 +773,7 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmspi, int, _stat, ( dmdrvi_context_t conte
         return -EINVAL;
     }
 
-    stat->size = 0; /* Stream/message device, no fixed size */
+    stat->size = (dmdrvi_size_t)0; /* Stream/message device, no fixed size */
     stat->mode = 0666;
     return 0;
 }
