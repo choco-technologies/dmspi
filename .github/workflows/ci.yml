@@ -23,12 +23,14 @@ jobs:
         run: |
           mkdir -p build
           cd build
-          # dmspi links against dmspi_port_if (headers only),
-          # not dmspi_port itself, so building only these two targets
-          # never touches src/port/*/port.c - safe to build natively here
-          # regardless of which CPU family the port defaults to.
-          cmake .. -DDMOD_MODE=DMOD_MODULE -DDMOD_TOOLS_NAME=arch/x86_64
-          cmake --build . --target dmspi test_dmspi
+          # dmspi links against dmspi_port_if (headers only), so building it
+          # never touches src/port/*/port.c. dmspi_port itself is also built
+          # here (against src/port/x86_64's software-loopback stub, selected
+          # via DMOD_CPU_FAMILY) purely so dmod_loader has something to
+          # satisfy dmspi's runtime dmspi_port dependency below - there is
+          # no published x86_64 release of the real hardware port.
+          cmake .. -DDMOD_MODE=DMOD_MODULE -DDMOD_TOOLS_NAME=arch/x86_64 -DDMOD_CPU_FAMILY=x86_64
+          cmake --build . --target dmspi dmspi_port test_dmspi
 
       - name: Verify module files
         run: |
@@ -37,6 +39,7 @@ jobs:
           test -f build/dmf/dmspi.dmf
           test -f build/dmf/dmspi_version.txt
           test -f build/dmf/test_dmspi.dmf
+          test -f build/dmf/dmspi_port.dmf
           echo "Module files present"
 
       - name: Run tests with dmod_loader
@@ -47,10 +50,12 @@ jobs:
           # into build/dmf before dmod_loader can resolve them, same as the
           # ctest target defined in tests/CMakeLists.txt already does.
           # dmspi.dmd also lists dmspi_port, which has no published x86_64
-          # build and isn't needed here anyway (this job only builds against
-          # dmspi_port_if headers, never the real port - see the comment on
-          # the build step above) - `|| true` lets that one lookup fail
-          # without masking a real failure to fetch dmhaman/dmini/dm_sw_ring.
+          # release (only the real stm32f4/stm32f7 hardware ports are
+          # published) - the build step above already placed our own
+          # x86_64 dmspi_port.dmf (the loopback stub) in build/dmf, so
+          # `|| true` just lets dmf-get's redundant remote lookup for it
+          # fail without masking a real failure to fetch dmhaman/dmini/
+          # dm_sw_ring.
           dmf-get install -d build/dmf/dmspi.dmd -y || true
           dmod_loader build/dmf/test_dmspi.dmf
 
