@@ -42,6 +42,11 @@ jobs:
       - name: Run tests with dmod_loader
         run: |
           export DMOD_DMF_DIR=$(pwd)/build/dmf
+          # dmod_link_modules only fetches headers at configure time; dmspi's
+          # own runtime dependencies (e.g. dmhaman) still need to be staged
+          # into build/dmf before dmod_loader can resolve them, same as the
+          # ctest target defined in tests/CMakeLists.txt already does.
+          dmf-get install -d build/dmf/dmspi.dmd -y
           dmod_loader build/dmf/test_dmspi.dmf
 
   discover-cpu-families:
