@@ -1,51 +1,35 @@
 #ifndef DMSPI_H
 #define DMSPI_H
 
-#include <stdint.h>
-#include <stdbool.h>
-#include <stddef.h>
-#include "dmod_types.h"
 #include "dmspi_defs.h"
+#include "dmspi_types.h"
 
 /**
- * Public API for the dmspi module.
- *
- * Functions are declared with the dmod_dmspi_api(...) macro - dmod's
- * standard pattern for functions callable from other modules (or from this
- * module's own tests/), resolved dynamically by the loader rather than
- * through normal static linkage. See dm_sw_ring/include/dm_sw_ring.h for a
- * fully worked real-world example of the same shape.
- *
- * Definitions in src/dmspi.c use the matching
- * dmod_dmspi_api_declaration(...) macro - a plain C function
- * definition here will NOT satisfy these declarations at link time.
- *
- * This is an example interface using the usual "opaque handle" pattern -
- * replace the handle, functions, and struct definition in
- * src/dmspi.c with your module's real API.
+ * @brief SPI driver configuration structure
  */
-
-/* Opaque handle - the real struct is defined in src/dmspi.c */
-typedef struct dmspi* dmspi_t;
+typedef struct
+{
+    dmspi_instance_t        instance;           /**< SPI instance number (1-based) */
+    dmspi_role_t             role;                /**< Master or slave */
+    dmspi_baudrate_t         baudrate;            /**< Requested SCK frequency, Hz (master only) */
+    dmspi_clock_polarity_t   clock_polarity;      /**< Clock polarity (CPOL) */
+    dmspi_clock_phase_t      clock_phase;         /**< Clock phase (CPHA) */
+    dmspi_bit_order_t        bit_order;           /**< Bit order (MSB/LSB first) */
+    dmspi_nss_mode_t         nss_mode;            /**< NSS (chip select) management mode */
+    dmspi_int_trigger_t      interrupt_trigger;   /**< Interrupt trigger source */
+    dmspi_interrupt_handler_t interrupt_handler;  /**< Interrupt handler (NULL = not used) */
+} dmspi_config_t;
 
 /**
- * Create a new dmspi instance.
+ * @brief Validate a configuration structure without touching hardware.
  *
- * @return A valid handle on success, or NULL on allocation failure.
- */
-dmod_dmspi_api(1.0, dmspi_t, _create, ( void ));
-
-/**
- * Destroy an instance created by dmspi_create(). Safe to call with
- * NULL.
- */
-dmod_dmspi_api(1.0, void, _destroy, ( dmspi_t handle ));
-
-/**
- * Example accessor - replace with your module's real API.
+ * Checks that the combination of parameters is self-consistent (e.g. a
+ * master requires a non-zero baud rate). Does not require the dmspi_port
+ * module to be loaded, so it is safe to call from any context, including
+ * off-target unit tests.
  *
- * @return true if handle is a valid, non-NULL instance.
+ * @return true if the configuration is valid, false otherwise.
  */
-dmod_dmspi_api(1.0, bool, _is_valid, ( dmspi_t handle ));
+dmod_dmspi_api(1.0, bool, _validate_config, ( const dmspi_config_t *config ));
 
 #endif // DMSPI_H

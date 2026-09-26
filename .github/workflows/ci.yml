@@ -26,9 +26,29 @@ jobs:
           # dmspi links against dmspi_port_if (headers only),
           # not dmspi_port itself, so building only these two targets
           # never touches src/port/*/port.c - safe to build natively here
-          # regardless of which CPU family the port defaults to.
+          # regardless of which CPU family the port defaults to. Leave
+          # DMOD_CPU_FAMILY at its default (stm32f7): dmod_link_modules'
+          # header fetch for dmgpio keys off of it too, and dmgpio has never
+          # published an x86_64 package - only stm32f4/stm32f7, which is
+          # also all its release pipeline ever builds. Overriding it to
+          # x86_64 here 404s that fetch, since dmgpio's headers don't come
+          # from a family-independent package.
           cmake .. -DDMOD_MODE=DMOD_MODULE -DDMOD_TOOLS_NAME=arch/x86_64
           cmake --build . --target dmspi test_dmspi
+
+      - name: Build x86_64 dmspi_port loopback stub
+        run: |
+          # Separate build dir/configure so DMOD_CPU_FAMILY=x86_64 here can't
+          # affect the dmgpio header fetch above. dmspi_port itself has no
+          # x86_64 release (it's real STM32 register access) - this builds
+          # src/port/x86_64/port.c, a software loopback stub that exists
+          # purely so dmod_loader has something to satisfy dmspi's runtime
+          # dmspi_port dependency with below.
+          mkdir -p build_dmspi_port_x86_64
+          cd build_dmspi_port_x86_64
+          cmake .. -DDMOD_MODE=DMOD_MODULE -DDMOD_TOOLS_NAME=arch/x86_64 -DDMOD_CPU_FAMILY=x86_64
+          cmake --build . --target dmspi_port
+          cp dmf/dmspi_port.dmf dmf/dmspi_port.dmd ../build/dmf/
 
       - name: Verify module files
         run: |
@@ -37,11 +57,24 @@ jobs:
           test -f build/dmf/dmspi.dmf
           test -f build/dmf/dmspi_version.txt
           test -f build/dmf/test_dmspi.dmf
+          test -f build/dmf/dmspi_port.dmf
           echo "Module files present"
 
       - name: Run tests with dmod_loader
         run: |
           export DMOD_DMF_DIR=$(pwd)/build/dmf
+          # dmod_link_modules only fetches headers at configure time; dmspi's
+          # own runtime dependencies (e.g. dmhaman) still need to be staged
+          # into build/dmf before dmod_loader can resolve them, same as the
+          # ctest target defined in tests/CMakeLists.txt already does.
+          # dmspi.dmd also lists dmspi_port, which has no published x86_64
+          # release (only the real stm32f4/stm32f7 hardware ports are
+          # published) - the build step above already placed our own
+          # x86_64 dmspi_port.dmf (the loopback stub) in build/dmf, so
+          # `|| true` just lets dmf-get's redundant remote lookup for it
+          # fail without masking a real failure to fetch dmhaman/dmini/
+          # dm_sw_ring.
+          dmf-get install -d build/dmf/dmspi.dmd -y || true
           dmod_loader build/dmf/test_dmspi.dmf
 
   discover-cpu-families:
@@ -92,7 +125,17 @@ jobs:
           cd build_$CPU_FAMILY
 
           cmake .. -DDMOD_CPU_FAMILY="${CPU_FAMILY}"
-          cmake --build .
+          if [ "$CPU_FAMILY" = "x86_64" ]; then
+            # x86_64 only exists as a software-loopback stand-in for the
+            # real (hardware-only) dmspi_port - it has no dmspi release of
+            # its own to build, and building the full "all" target here
+            # would also re-fetch dmgpio's headers keyed off this same
+            # DMOD_CPU_FAMILY, which 404s since dmgpio never published an
+            # x86_64 package (see the core job's comment on this).
+            cmake --build . --target dmspi_port
+          else
+            cmake --build .
+          fi
 
           echo "Build completed for CPU family: ${CPU_FAMILY}"
           ls -lh dmf/

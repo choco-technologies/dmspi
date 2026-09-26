@@ -33,7 +33,7 @@ DMOD_CXXSOURCES=
 DMOD_INC_DIRS=include
 
 # The list of libraries to link
-DMOD_LIBS=
+DMOD_LIBS=dmdrvi dmini dmhaman dm_sw_ring dmspi_port
 
 # The list of definitions
 DMOD_DEFINITIONS=
