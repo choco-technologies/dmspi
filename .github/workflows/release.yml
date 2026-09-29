@@ -19,8 +19,12 @@ jobs:
       - name: List available CPU families
         id: list-families
         run: |
+          # x86_64 is the software-loopback port CI uses to run the tests
+          # (see ci.yml) - it is never published, and a full build for it
+          # fails anyway: dmgpio has no x86_64 package to fetch headers from.
           CPU_FAMILIES=$(find src/port -mindepth 2 -maxdepth 2 -name "port.c" -type f -printf '%h\n' | \
             xargs -n1 basename | \
+            grep -vx 'x86_64' | \
             sort | \
             jq -R -s -c 'split("\n") | map(select(length > 0))')
 
