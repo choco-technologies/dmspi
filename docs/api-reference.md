@@ -49,7 +49,7 @@ callable by name from another module (see [configuration.md](configuration.md)).
 the range dmdrvi reserves for driver-specific commands. Any other command -
 for example the class probes (`DMDRVI_IOCTL_BLOCK_GET_INFO`,
 `DMDRVI_IOCTL_MONITOR_GET_POLICY`) dmdevfs sends to every node - returns
-`-ENOTTY` without being logged. Up to dmspi 1.x the commands started at 1;
+`-ENOTTY` without being logged. Before this numbering the commands started at 1;
 modules sending dmspi ioctls must be rebuilt.
 | `dmdrvi_dmspi_flush` | Block until any in-progress transfer completes. |
 | `dmdrvi_dmspi_stat` | Report device metadata. |
