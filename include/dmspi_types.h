@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "dmdrvi_ioctl.h"
 
 /**
  * @brief SPI instance type (1-based, e.g. 1 = SPI1)
@@ -79,7 +80,10 @@ typedef enum
  */
 typedef enum
 {
-    dmspi_ioctl_cmd_get_role = 1,               /**< Get role (master/slave) */
+    /* Private commands start at DMDRVI_IOCTL_CUSTOM_BASE: everything below
+     * it is a standard dmdrvi command (network, block, monitor) that dmdevfs
+     * and other generic code may send to any node - dmspi answers -ENOTTY. */
+    dmspi_ioctl_cmd_get_role = DMDRVI_IOCTL_CUSTOM_BASE,   /**< Get role (master/slave) */
     dmspi_ioctl_cmd_set_role,                   /**< Set role (master/slave) */
     dmspi_ioctl_cmd_get_baudrate,               /**< Get requested baud rate */
     dmspi_ioctl_cmd_set_baudrate,               /**< Set requested baud rate */

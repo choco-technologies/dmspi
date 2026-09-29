@@ -71,7 +71,7 @@ dmod_add_library(${DMOD_MODULE_NAME} ${DMOD_MODULE_VERSION}
 # dmgpio_ioctl_cmd_set_pins_state (chip select) has a different value than
 # in 1.x, so dmspi has to be built against 2.0 and never paired with 1.x.
 dmod_link_modules(${DMOD_MODULE_NAME}
-    dmdrvi
+    dmdrvi@>=2.0
     dmini
     dmhaman
     dm_sw_ring

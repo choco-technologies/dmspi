@@ -44,6 +44,13 @@ callable by name from another module (see [configuration.md](configuration.md)).
 | `dmdrvi_dmspi_read` | Receive bytes - drains the RX ring if configured, otherwise blocks clocking dummy bytes (master) or waiting for the external master (slave). |
 | `dmdrvi_dmspi_write` | Transmit bytes (full duplex at the wire level; received bytes are discarded). |
 | `dmdrvi_dmspi_ioctl` | Get/set configuration parameters, register an interrupt handler, run a full-duplex transfer, or reconfigure - see `dmspi_ioctl_cmd_t` in [include/dmspi_types.h](../include/dmspi_types.h). |
+
+`dmspi_ioctl_cmd_t` starts at `DMDRVI_IOCTL_CUSTOM_BASE` (0x1000, dmdrvi 2.0),
+the range dmdrvi reserves for driver-specific commands. Any other command -
+for example the class probes (`DMDRVI_IOCTL_BLOCK_GET_INFO`,
+`DMDRVI_IOCTL_MONITOR_GET_POLICY`) dmdevfs sends to every node - returns
+`-ENOTTY` without being logged. Up to dmspi 1.x the commands started at 1;
+modules sending dmspi ioctls must be rebuilt.
 | `dmdrvi_dmspi_flush` | Block until any in-progress transfer completes. |
 | `dmdrvi_dmspi_stat` | Report device metadata. |
 

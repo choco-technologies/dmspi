@@ -682,10 +682,11 @@ dmod_dmdrvi_dif_api_declaration(2.0, dmspi, int, _ioctl, ( dmdrvi_context_t cont
         return -EINVAL;
     }
 
-    if (command >= dmspi_ioctl_cmd_max)
+    /* Not a dmspi command - e.g. the class probes dmdevfs sends to every
+     * node: not implemented, as dmdrvi requires, and not worth a log line. */
+    if (command < dmspi_ioctl_cmd_get_role || command >= dmspi_ioctl_cmd_max)
     {
-        DMOD_LOG_ERROR("Invalid ioctl command %d\n", command);
-        return -EINVAL;
+        return -ENOTTY;
     }
 
     if (command == dmspi_ioctl_cmd_reconfigure)

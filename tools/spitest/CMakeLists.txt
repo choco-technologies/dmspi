@@ -25,9 +25,11 @@ dmod_add_executable(spitest ${DMOD_MODULE_VERSION}
 # dmosi is a separate module - fetch its headers for the worker thread
 # used by the loopback test. The real implementation is resolved at
 # runtime against the system's own instance, same as dmtty/tools/tty's
-# dmtty_attach() - no static linkage.
+# dmtty_attach() - no static linkage. dmdrvi: headers only, for
+# DMDRVI_IOCTL_CUSTOM_BASE (the base of dmspi_ioctl_cmd_t).
 dmod_link_modules(spitest
     dmosi
+    dmdrvi@>=2.0
 )
 
 # dmspi_types.h lives in this same repo (no dmf-get fetch needed) - it only
