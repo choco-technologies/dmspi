@@ -25,6 +25,11 @@ if(DMOD_CPU_FAMILY MATCHES "^stm32")
     set(COMMON_SOURCES stm32_common/stm32_common.c)
 endif()
 
+# stm32f7: master transfers by DMA (stm32_spi_dma.c) - dmdma 0.4, its lease API
+if(DMOD_CPU_FAMILY STREQUAL "stm32f7")
+    list(APPEND COMMON_SOURCES stm32_common/stm32_spi_dma.c)
+endif()
+
 #
 #   dmod_add_library - create a library module
 #   it has the same signature as add_library
@@ -37,14 +42,24 @@ dmod_add_library(${DMOD_MODULE_NAME} ${DMOD_MODULE_VERSION}
     ${COMMON_SOURCES}
 )
 
+if(DMOD_CPU_FAMILY STREQUAL "stm32f7")
+    target_compile_definitions(${DMOD_MODULE_NAME} PRIVATE DMSPI_PORT_DMA=1)
+endif()
+
 # dmdrvi: headers only - dmspi_types.h numbers the ioctl commands from
 # DMDRVI_IOCTL_CUSTOM_BASE.
-dmod_link_modules(${DMOD_MODULE_NAME}
+# One dmod_link_modules() call: each call rewrites the target's version
+# requirements file.
+set(DMSPI_PORT_MODULES
     dm_sw_ring
     dmclk_port
     dmosi
     dmdrvi@>=2.0
 )
+if(DMOD_CPU_FAMILY STREQUAL "stm32f7")
+    list(APPEND DMSPI_PORT_MODULES dmdma@>=0.4)
+endif()
+dmod_link_modules(${DMOD_MODULE_NAME} ${DMSPI_PORT_MODULES})
 
 target_include_directories(${DMOD_MODULE_NAME} BEFORE PRIVATE
     ${CMAKE_SOURCE_DIR}/include

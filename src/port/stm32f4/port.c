@@ -30,6 +30,13 @@ void stm32_spi_family_configure_frame_format(volatile stm32_spi_t *SPI)
     SPI->CR1 &= ~STM32_SPI_CR1_DFF;
 }
 
+/* The CCM (0x10000000, 64 KiB) is on the core's bus alone */
+bool stm32_spi_family_dma_reachable(const void *buffer, size_t size)
+{
+    uintptr_t start = (uintptr_t)buffer;
+    return !(start < 0x10010000UL && start + size > 0x10000000UL);
+}
+
 /* ---- IRQ handlers ---- */
 
 DMOD_IRQ_HANDLER(35) { stm32_spi_irq_handler(1); }  /* SPI1 */

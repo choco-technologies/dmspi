@@ -2,6 +2,7 @@
 #define STM32_COMMON_H
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include "dmspi_port.h"
 
@@ -136,6 +137,29 @@ void stm32_spi_family_configure_frame_format(volatile stm32_spi_t *SPI);
  *        (declared here so stm32_common.c and the per-family port.c files
  *        agree on the same priority policy).
  */
+/**
+ * @brief Whether the SPI's DMA streams reach the buffer's memory.
+ *
+ * F7: not the DTCM (a DMA1 stream has no path to it; the SPIs of DMA2 do,
+ * but the lowest 128 KiB are left out for all - any F7's DTCM is there and
+ * the polled transfer takes what is refused). F4: not the CCM.
+ * Implemented once per family in that family's port.c.
+ */
+bool stm32_spi_family_dma_reachable(const void *buffer, size_t size);
+
+#ifdef DMSPI_PORT_DMA
+/**
+ * @brief A master transfer by DMA (stm32_spi_dma.c).
+ *
+ * @return 0 done, -1 failed, 1 not done by DMA (too short, a buffer the DMA
+ *         cannot use, no streams): the caller moves the bytes itself
+ */
+int stm32_spi_dma_transfer(dmspi_instance_t instance, volatile stm32_spi_t *SPI,
+                           const uint8_t *tx, uint8_t *rx, size_t size, uint32_t clock_hz);
+/** Gives the instance's streams back */
+void stm32_spi_dma_release(dmspi_instance_t instance);
+#endif
+
 void stm32_spi_nvic_enable_irq(uint32_t irqn);
 void stm32_spi_nvic_disable_irq(uint32_t irqn);
 

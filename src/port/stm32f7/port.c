@@ -32,6 +32,16 @@ void stm32_spi_family_configure_frame_format(volatile stm32_spi_t *SPI)
     SPI->CR2 = (SPI->CR2 & ~STM32_SPI_CR2_DS_Msk) | STM32_SPI_CR2_DS_8BIT | STM32_SPI_CR2_FRXTH;
 }
 
+/* The DTCM is the first 64-128 KiB of RAM (by the part): no DMA1 stream
+ * reaches it - the lowest 128 KiB are refused (an F74x/F75x's SRAM1 starts
+ * above 64 KiB; the polled transfer takes what is refused). SRAM1/2, the
+ * AXI SRAM and the external memory are reached. */
+bool stm32_spi_family_dma_reachable(const void *buffer, size_t size)
+{
+    uintptr_t start = (uintptr_t)buffer;
+    return !(start < 0x20020000UL && start + size > 0x20000000UL) && start >= 0x00080000UL;   /* nor the ITCM */
+}
+
 /* ---- IRQ handlers ---- */
 
 DMOD_IRQ_HANDLER(35) { stm32_spi_irq_handler(1); }  /* SPI1 */
