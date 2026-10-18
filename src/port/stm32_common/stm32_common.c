@@ -163,6 +163,9 @@ dmod_dmspi_port_api_declaration(1.0, int, _deinit, ( dmspi_instance_t instance )
     volatile stm32_spi_t *SPI = get_spi(instance);
     SPI->CR1 &= ~STM32_SPI_CR1_SPE;
     SPI->CR2 = 0;
+#ifdef DMSPI_PORT_DMA
+    stm32_spi_dma_release(instance);
+#endif
 
     stm32_spi_nvic_disable_irq(stm32_spi_instances[instance - 1].irqn);
 
@@ -175,6 +178,17 @@ dmod_dmspi_port_api_declaration(1.0, int, _transfer, ( dmspi_instance_t instance
 
     volatile stm32_spi_t *SPI = get_spi(instance);
     clear_receive_state(SPI);
+
+#ifdef DMSPI_PORT_DMA
+    /* A transfer of some size by DMA - the CPU is free while the bus is
+     * clocked; 1: not possible (see stm32_spi_dma.c), moved here */
+    if ((SPI->CR1 & STM32_SPI_CR1_MSTR) != 0U)
+    {
+        int dma = stm32_spi_dma_transfer(instance, SPI, tx, rx, size, get_spi_clock(instance));
+        if (dma <= 0)
+            return dma;
+    }
+#endif
 
     for (size_t i = 0; i < size; i++)
     {

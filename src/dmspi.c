@@ -34,6 +34,7 @@ struct dmdrvi_context
     uint32_t             rx_ring_size;           /**< Capacity of the RX ring buffer (from config) */
     dm_sw_ring_flags_t   rx_ring_wait_flags;     /**< RX ring read-wait behavior (from config) */
     char                 *cs_path;                /**< Friend GPIO path (NULL = unmanaged) */
+    void                 *cs_file;                /**< Its node, kept open once opened (NULL: not yet) */
     bool                 cs_active_high;         /**< true = assert by driving the pin high instead of low */
 };
 
@@ -47,16 +48,34 @@ static void cs_set_active(dmdrvi_context_t context, bool active)
         ? dmgpio_pins_state_all_high
         : dmgpio_pins_state_all_low;
 
-    void *file = Dmod_FileOpen(context->cs_path, "r+");
-    if (file == NULL)
+    /* Opened once and kept: every transfer selects and deselects the
+     * device, and an open is a path lookup through dmvfs - for a device
+     * clocked hundreds of times a second (a network co-processor) the opens
+     * cost more than the transfers. Closed when the friend changes. */
+    if (context->cs_file == NULL)
     {
-        DMOD_LOG_ERROR("Failed to open chip-select GPIO: %s\n", context->cs_path);
-        return;
+        context->cs_file = Dmod_FileOpen(context->cs_path, "r+");
+        if (context->cs_file == NULL)
+        {
+            DMOD_LOG_ERROR("Failed to open chip-select GPIO: %s\n", context->cs_path);
+            return;
+        }
     }
 
-    if (Dmod_Ioctl(file, dmgpio_ioctl_cmd_set_pins_state, &state) != 0)
+    if (Dmod_Ioctl(context->cs_file, dmgpio_ioctl_cmd_set_pins_state, &state) != 0)
+    {
         DMOD_LOG_ERROR("Failed to update chip-select GPIO: %s\n", context->cs_path);
-    Dmod_FileClose(file);
+        Dmod_FileClose(context->cs_file);
+        context->cs_file = NULL;
+    }
+}
+
+/* The kept chip-select node closed (the friend changes or goes away) */
+static void cs_close(dmdrvi_context_t context)
+{
+    if (context->cs_file != NULL)
+        Dmod_FileClose(context->cs_file);
+    context->cs_file = NULL;
 }
 
 static void cs_assert(dmdrvi_context_t context)
@@ -521,9 +540,10 @@ dmod_dmdrvi_dif_api_declaration(2.0, dmspi, void, _free, ( dmdrvi_context_t cont
             context->rx_ring = NULL;
         }
 
-        /* Do not access the CS node here. Its section is declared after dmspi,
-         * so dmdevfs tears the GPIO down first (reverse order). Every completed
-         * transfer has already left CS deasserted. */
+        /* Do not access the CS node here - not even to close the kept handle.
+         * Its section is declared after dmspi, so dmdevfs tears the GPIO down
+         * first (reverse order). Every completed transfer has already left CS
+         * deasserted. */
         Dmod_Free(context->cs_path);
         Dmod_Free(context->interrupt_handler_name);
         dmspi_port_deinit(context->config.instance);
@@ -543,6 +563,7 @@ dmod_dmdrvi_dif_api_declaration(2.0, dmspi, void, _friend_changed,
         return;
     }
 
+    cs_close(context);
     if (info->state != dmdrvi_dev_state_ready || info->node_path == NULL)
     {
         Dmod_Free(context->cs_path);
