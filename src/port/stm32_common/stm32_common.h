@@ -138,14 +138,17 @@ void stm32_spi_family_configure_frame_format(volatile stm32_spi_t *SPI);
  *        agree on the same priority policy).
  */
 /**
- * @brief Whether the SPI's DMA streams reach the buffer's memory.
+ * @brief Whether the DMA controller's streams reach the buffer's memory.
  *
- * F7: not the DTCM (a DMA1 stream has no path to it; the SPIs of DMA2 do,
- * but the lowest 128 KiB are left out for all - any F7's DTCM is there and
- * the polled transfer takes what is refused). F4: not the CCM.
- * Implemented once per family in that family's port.c.
+ * F7: never the DTCM nor the ITCM (the lowest 128 KiB of RAM are refused:
+ * any F7's DTCM is there); DMA1 not the external memory either (FMC: the
+ * SDRAM) - found on an STM32F746G-DISCO, a TX stream reading it fails.
+ * F4: not the CCM. Implemented once per family in that family's port.c; the
+ * polled transfer takes what is refused.
+ *
+ * @param controller 0: DMA1, 1: DMA2
  */
-bool stm32_spi_family_dma_reachable(const void *buffer, size_t size);
+bool stm32_spi_family_dma_reachable(uint8_t controller, const void *buffer, size_t size);
 
 #ifdef DMSPI_PORT_DMA
 /**

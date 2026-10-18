@@ -17,7 +17,8 @@
  * Only when it can be done right; otherwise stm32_spi_dma_transfer() says so
  * (1) and the caller moves the bytes by itself:
  *  - the transfer is at least STM32_SPI_DMA_MIN_BYTES and less than 64 KiB;
- *  - the buffers are in memory the DMA reaches and start on and span whole
+ *  - the buffers are in memory the controller reaches (see
+ *    stm32_spi_family_dma_reachable(): for DMA1 not the SDRAM) and start on and span whole
  *    D-cache lines (32 bytes): the cache is cleaned before the DMA reads a
  *    buffer and cleaned and invalidated before it writes one (so no dirty
  *    line is evicted over the incoming bytes) and invalidated again after
@@ -92,11 +93,11 @@ static void dcache_by_address(volatile uint32_t *operation, const void *buffer, 
     __asm__ volatile ("dsb\n\tisb" ::: "memory");
 }
 
-static bool buffer_usable(const void *buffer, size_t size)
+static bool buffer_usable(uint8_t controller, const void *buffer, size_t size)
 {
     return buffer == NULL ||
            (((uintptr_t)buffer % DMA_ALIGNMENT) == 0U && (size % DMA_ALIGNMENT) == 0U &&
-            stm32_spi_family_dma_reachable(buffer, size));
+            stm32_spi_family_dma_reachable(controller, buffer, size));
 }
 
 /* The lease callbacks: interrupt context (or synchronous from _abort, then
@@ -189,7 +190,9 @@ int stm32_spi_dma_transfer(dmspi_instance_t instance, volatile stm32_spi_t *SPI,
                            const uint8_t *tx, uint8_t *rx, size_t size, uint32_t clock_hz)
 {
     unsigned idx = (unsigned)instance - 1U;
-    if (size < DMA_MIN_BYTES || size > DMA_MAX_BYTES || !buffer_usable(tx, size) || !buffer_usable(rx, size))
+    uint8_t controller = dma_map[idx].controller;
+    if (size < DMA_MIN_BYTES || size > DMA_MAX_BYTES ||
+        !buffer_usable(controller, tx, size) || !buffer_usable(controller, rx, size))
         return 1;
     if (!dma_ensure(idx))
         return 1;

@@ -31,8 +31,9 @@ void stm32_spi_family_configure_frame_format(volatile stm32_spi_t *SPI)
 }
 
 /* The CCM (0x10000000, 64 KiB) is on the core's bus alone */
-bool stm32_spi_family_dma_reachable(const void *buffer, size_t size)
+bool stm32_spi_family_dma_reachable(uint8_t controller, const void *buffer, size_t size)
 {
+    (void)controller;
     uintptr_t start = (uintptr_t)buffer;
     return !(start < 0x10010000UL && start + size > 0x10000000UL);
 }
