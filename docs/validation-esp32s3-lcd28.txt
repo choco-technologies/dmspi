@@ -21,3 +21,19 @@ MOSI->MISO echo: OK (16 bytes matched)
 
 Not validated: another device on the bus (the ST7789 display has no MISO and its driver does not exist yet), 40 MHz, modes 1-3, LSB first,
 GP-SPI3, hard NSS, the exact SCK frequency (not measured). The loopback proves the data path and the 64-byte transactions only.
+
+
+By the GDMA (dmdma, transfers of 64 bytes or more; the 63-byte one is polled), through the same loopback config, 10 MHz, 2026-11-03:
+esp32s3fn16r8@/> spitest --echo /dev/dmspix/loopback_spi 63
+63-byte echo: OK (ioctl 0, 0 ms)
+esp32s3fn16r8@/> spitest --echo /dev/dmspix/loopback_spi 64
+64-byte echo: OK (ioctl 0, 0 ms)
+esp32s3fn16r8@/> spitest --echo /dev/dmspix/loopback_spi 65
+65-byte echo: OK (ioctl 0, 0 ms)
+esp32s3fn16r8@/> spitest --echo /dev/dmspix/loopback_spi 4093
+4093-byte echo: OK (ioctl 0, 10 ms)
+esp32s3fn16r8@/> spitest --echo /dev/dmspix/loopback_spi 4097
+4097-byte echo: OK (ioctl 0, 10 ms)
+esp32s3fn16r8@/> spitest --echo /dev/dmspix/loopback_spi 100001
+100001-byte echo: OK (ioctl 0, 120 ms)
+(the time has the resolution of the system tick; 100001 bytes are 80 ms on the wire, the rest is the copies to and from the bounce buffers and the set-up of each 4092-byte chunk)

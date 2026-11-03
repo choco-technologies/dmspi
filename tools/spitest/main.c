@@ -172,9 +172,11 @@ static int run_echo_loopback(const char *path, unsigned size)
                 rx_big[i] = 0;
             }
             dmspi_transfer_t big = { .tx = tx_big, .rx = rx_big, .size = size };
+            uint64_t started = Dmod_GetUptime();
             ret = Dmod_Ioctl(fp, dmspi_ioctl_cmd_transfer, &big);
+            unsigned ms = (unsigned)(Dmod_GetUptime() - started);
             ok = ret == 0 && memcmp(tx_big, rx_big, size) == 0;
-            Dmod_Printf("%u-byte echo: %s (ioctl %d)\n", size, ok ? "OK" : "MISMATCH", ret);
+            Dmod_Printf("%u-byte echo: %s (ioctl %d, %u ms)\n", size, ok ? "OK" : "MISMATCH", ret, ms);
         }
         Dmod_Free(tx_big);
         Dmod_Free(rx_big);
