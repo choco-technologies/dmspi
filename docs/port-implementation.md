@@ -54,3 +54,20 @@ needs nothing beyond clearing `CR1.DFF`). See `stm32f4/port.c` and
 6. Do not introduce a module-specific variable (e.g. `<MODULE>_MCU_SERIES`) for
    this - `DMOD_CPU_FAMILY` is the ecosystem-wide convention, already wired
    into `dmf-get` package resolution.
+
+## ESP32-S3
+
+`src/port/esp32s3/port.c` (nothing shared with `stm32_common`): the master of the general purpose controllers GP-SPI2 and GP-SPI3. The
+instance is the number in the name of the controller: **2 and 3** (SPI0 and SPI1 are the flash and the PSRAM).
+
+* A transfer is cut into transactions of 64 bytes (the data buffer of the controller): the bytes go into the buffer, the transaction
+  is started and polled, the received ones are read from the same buffer. Always full duplex: `receive` shifts out 0xFF, `transmit`
+  drops what comes in. No DMA yet, no interrupts (`set_interrupt_trigger` accepts only `off`), no slave role.
+* The signals go to the pads through the GPIO matrix: the core calls the new optional port function `dmspi_port_set_pins()` (keys
+  `sck_pin`, `mosi_pin`, `miso_pin`, `cs_pin`) before `init`. The STM32 and x86_64 ports return `-ENOTSUP`, so nothing changes for them.
+  A MISO pad can be the same as the MOSI pad (loopback test without a wire: `configs/board/esp32s3-lcd28/loopback.ini`).
+* The clock is the 80 MHz one, the divider is searched as in the HAL of ESP-IDF (pre 1..16, n 2..64); `get_baudrate()` is the frequency
+  that comes out. Modes 0-3 and LSB first are supported. Through the GPIO matrix, ESP-IDF limits the speed to 26 MHz for reads (not
+  handled here: the input sampling is not compensated).
+* `nss_mode=hard` makes the controller drive CS0 on `cs_pin`, low during a transaction - so it rises between two transactions of a
+  transfer longer than 64 bytes. For long frames use `nss_mode=soft` and a GPIO as the chip select (the friend of dmspi).

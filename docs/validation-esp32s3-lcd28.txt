@@ -1,0 +1,23 @@
+dmspi on the Waveshare ESP32-S3-Touch-LCD-2.8 (ESP32-S3FN16R8), 2026-11-03
+Firmware: dmod-boot feature/esp32-s3, modules in the external RAM
+Config: configs/board/esp32s3-lcd28/loopback.ini - GP-SPI2, SCLK = GPIO15, MOSI = MISO = GPIO18 (the same pad), 10 MHz, mode 0, soft NSS
+
+esp32s3fn16r8@/> spitest --echo /dev/dmspix/loopback_spi 64
+MOSI->MISO echo: OK (16 bytes matched)
+64-byte echo: OK (ioctl 0)
+=== Echo loopback test ('/dev/dmspix/loopback_spi'): PASS ===
+esp32s3fn16r8@/> spitest --echo /dev/dmspix/loopback_spi 65
+MOSI->MISO echo: OK (16 bytes matched)
+65-byte echo: OK (ioctl 0)
+=== Echo loopback test ('/dev/dmspix/loopback_spi'): PASS ===
+esp32s3fn16r8@/> spitest --echo /dev/dmspix/loopback_spi 1000
+MOSI->MISO echo: OK (16 bytes matched)
+1000-byte echo: OK (ioctl 0)
+=== Echo loopback test ('/dev/dmspix/loopback_spi'): PASS ===
+esp32s3fn16r8@/> spitest --echo /dev/dmspix/loopback_spi 4093
+MOSI->MISO echo: OK (16 bytes matched)
+4093-byte echo: OK (ioctl 0)
+=== Echo loopback test ('/dev/dmspix/loopback_spi'): PASS ===
+
+Not validated: another device on the bus (the ST7789 display has no MISO and its driver does not exist yet), 40 MHz, modes 1-3, LSB first,
+GP-SPI3, hard NSS, the exact SCK frequency (not measured). The loopback proves the data path and the 64-byte transactions only.

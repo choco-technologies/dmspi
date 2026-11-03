@@ -25,6 +25,7 @@ do it):
 | `interrupt_handler` | string | (none) | Name of a dmhaman-registered handler to call on interrupt |
 | `rx_ring_size` | integer | 0 | Capacity of the RX ring buffer, in bytes (0 disables it; useful mainly for `role=slave`, where reception isn't driven by the local CPU) |
 | `rx_ring_wait_mode` | string | "some_data" | RX ring read-wait behavior: `"none"`, `"some_data"`, `"all_data"` |
+| `sck_pin`, `mosi_pin`, `miso_pin`, `cs_pin` | integer | -1 | Pads of the signals, for the chips that route them freely (ESP32-S3: the GPIO matrix; `sck_pin` and `mosi_pin` or `miso_pin` are required there; `cs_pin` is the hardware CS0 of `nss_mode=hard`). GPIO numbers; GPIO19/20 and GPIO26-37 are refused. The chips whose pads are fixed by the alternate function of the pin (STM32, set up with dmgpio) refuse the keys |
 
 Data frames are always 8 bits; there is no `data_size` parameter.
 

@@ -36,6 +36,10 @@ struct dmdrvi_context
     char                 *cs_path;                /**< Friend GPIO path (NULL = unmanaged) */
     void                 *cs_file;                /**< Its node, kept open once opened (NULL: not yet) */
     bool                 cs_active_high;         /**< true = assert by driving the pin high instead of low */
+    int                  sck_pin;                /**< Pads for the chips that route the signals freely (-1: not given) */
+    int                  mosi_pin;
+    int                  miso_pin;
+    int                  cs_pin;
 };
 
 static void cs_set_active(dmdrvi_context_t context, bool active)
@@ -311,6 +315,11 @@ static int read_config_parameters(dmdrvi_context_t context, dmini_context_t conf
     const char *handler_name = dmini_get_string(config, section, "interrupt_handler", NULL);
     context->interrupt_handler_name = (handler_name != NULL) ? Dmod_StrDup(handler_name) : NULL;
 
+    context->sck_pin  = dmini_get_int(config, section, "sck_pin", -1);
+    context->mosi_pin = dmini_get_int(config, section, "mosi_pin", -1);
+    context->miso_pin = dmini_get_int(config, section, "miso_pin", -1);
+    context->cs_pin   = dmini_get_int(config, section, "cs_pin", -1);
+
     context->rx_ring_size = (uint32_t)dmini_get_int(config, section, "rx_ring_size", 0);
     context->rx_ring_wait_flags = string_to_rx_ring_wait_flags(
         dmini_get_string(config, section, "rx_ring_wait_mode", "some_data"));
@@ -325,6 +334,17 @@ static int configure(dmdrvi_context_t context)
 {
     dmspi_config_t *c = &context->config;
     int ret;
+
+    if (context->sck_pin >= 0 || context->mosi_pin >= 0 || context->miso_pin >= 0 || context->cs_pin >= 0)
+    {
+        ret = dmspi_port_set_pins(c->instance, context->sck_pin, context->mosi_pin, context->miso_pin, context->cs_pin);
+        if (ret != 0)
+        {
+            DMOD_LOG_ERROR("SPI%u: sck_pin=%d mosi_pin=%d miso_pin=%d cs_pin=%d refused (%d)\n", c->instance, context->sck_pin,
+                           context->mosi_pin, context->miso_pin, context->cs_pin, ret);
+            return ret;
+        }
+    }
 
     ret = dmspi_port_init(c->instance, c->role);
     if (ret != 0)

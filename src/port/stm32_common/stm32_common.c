@@ -6,6 +6,7 @@
  * points to. See dmgpio/src/port/stm32_common/stm32_common.c for the same
  * split. */
 #include "dmod.h"
+#include <errno.h>
 #include "dmosi.h"
 #include "dmclk_port.h"
 #include "dm_sw_ring.h"
@@ -131,6 +132,12 @@ static uint32_t get_spi_clock(dmspi_instance_t instance)
 }
 
 /* ---- Port API implementation ---- */
+
+dmod_dmspi_port_api_declaration(1.0, int, _set_pins, ( dmspi_instance_t instance, int sck_pin, int mosi_pin, int miso_pin, int cs_pin ))
+{
+    (void)instance; (void)sck_pin; (void)mosi_pin; (void)miso_pin; (void)cs_pin;
+    return -ENOTSUP;   /* the pads are fixed by the alternate function of the pin (dmgpio) */
+}
 
 dmod_dmspi_port_api_declaration(1.0, int, _init, ( dmspi_instance_t instance, dmspi_role_t role ))
 {
