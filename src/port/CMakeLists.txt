@@ -26,6 +26,10 @@ if(DMOD_CPU_FAMILY MATCHES "^stm32")
 endif()
 
 # stm32f7: master transfers by DMA (stm32_spi_dma.c) - dmdma 0.4, its lease API
+if(DMOD_CPU_FAMILY STREQUAL "esp32s3")
+    # transfers by the GDMA (dmdma)
+    list(APPEND COMMON_SOURCES esp32s3/esp32s3_spi_dma.c)
+endif()
 if(DMOD_CPU_FAMILY STREQUAL "stm32f7")
     list(APPEND COMMON_SOURCES stm32_common/stm32_spi_dma.c)
 endif()
@@ -58,6 +62,8 @@ set(DMSPI_PORT_MODULES
 )
 if(DMOD_CPU_FAMILY STREQUAL "stm32f7")
     list(APPEND DMSPI_PORT_MODULES dmdma@>=0.4)
+elseif(DMOD_CPU_FAMILY STREQUAL "esp32s3")
+    list(APPEND DMSPI_PORT_MODULES dmdma)
 endif()
 dmod_link_modules(${DMOD_MODULE_NAME} ${DMSPI_PORT_MODULES})
 

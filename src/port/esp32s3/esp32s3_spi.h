@@ -22,6 +22,7 @@
 #define SPI_USER1_REG                   0x14U
 #define SPI_MS_DLEN_REG                 0x1CU
 #define SPI_MISC_REG                    0x20U
+#define SPI_DMA_CONF_REG                0x30U
 #define SPI_DMA_INT_CLR_REG             0x38U
 #define SPI_DMA_INT_RAW_REG             0x3CU
 #define SPI_W0_REG                      0x98U
@@ -41,6 +42,13 @@
 #define SPI_USER_USR_MISO               (1UL << 28)
 #define SPI_MISC_CS0_DIS                (1UL << 0)
 #define SPI_MISC_CK_IDLE_EDGE           (1UL << 29)
+/* DMA_CONF: the resets of the data path (pulsed), the DMA enables, RX_EOF_EN = 0: the end of a transaction ends the RX descriptor */
+#define SPI_DMA_CONF_DMA_RX_ENA         (1UL << 27)
+#define SPI_DMA_CONF_DMA_TX_ENA         (1UL << 28)
+#define SPI_DMA_CONF_RX_AFIFO_RST       (1UL << 29)
+#define SPI_DMA_CONF_BUF_AFIFO_RST      (1UL << 30)
+#define SPI_DMA_CONF_DMA_AFIFO_RST      (1UL << 31)
+#define SPI_DMA_CONF_RX_EOF_EN          (1UL << 21)
 #define SPI_DMA_INT_TRANS_DONE          (1UL << 12)
 #define SPI_SLAVE_SLAVE_MODE            (1UL << 26)
 #define SPI_SLAVE_SOFT_RESET            (1UL << 27)

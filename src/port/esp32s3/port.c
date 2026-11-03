@@ -2,6 +2,7 @@
 #include "dmod.h"
 #include "dmspi_port.h"
 #include "esp32s3_spi.h"
+#include "esp32s3_spi_dma.h"
 #include <errno.h>
 #include <string.h>
 
@@ -10,7 +11,8 @@
  *
  * A transfer is cut into transactions of 64 bytes (the data buffer W0..W15 of the controller): the bytes are put into the buffer, the
  * transaction is started and waited for (polling), the received ones are taken from the same buffer. Full duplex always; _receive shifts
- * out 0xFF, _transmit drops what comes in. No DMA, no interrupts, no slave role (-ENOTSUP / -1).
+ * out 0xFF, _transmit drops what comes in. Transfers of 64 bytes or more go by the GDMA through dmdma (esp32s3_spi_dma.c), the CPU
+ * sleeping meanwhile; shorter ones, or when dmdma has no streams, are polled. No interrupts, no slave role (-1).
  *
  * The signals go to the pads through the GPIO matrix (dmspi_port_set_pins; the keys sck_pin, mosi_pin, miso_pin, cs_pin). nss_mode=hard
  * makes the controller drive CS0 on cs_pin, low during a transaction - and so it rises between two transactions of a long transfer;
@@ -231,6 +233,7 @@ dmod_dmspi_port_api_declaration(1.0, int, _deinit, (dmspi_instance_t instance))
     spi_t *s = &controllers[index];
     if (!s->initialised)
         return 0;
+    esp32s3_spi_dma_release((unsigned)index);
     unroute_output(s->sck);
     unroute_output(s->mosi);
     unroute_output(s->cs);
@@ -291,6 +294,9 @@ dmod_dmspi_port_api_declaration(1.0, int, _transfer, (dmspi_instance_t instance,
     int index = index_of(instance);
     if (index < 0 || !controllers[index].initialised || controllers[index].baudrate == 0U)
         return -1;
+    int dma = esp32s3_spi_dma_transfer((unsigned)index, tx, rx, size, controllers[index].baudrate);
+    if (dma <= 0)
+        return dma;                                         /* done or failed; 1: not done, the CPU moves the bytes */
     for (size_t done = 0; done < size;)
     {
         size_t n = size - done < ESP32S3_SPI_BUFFER_BYTES ? size - done : ESP32S3_SPI_BUFFER_BYTES;
