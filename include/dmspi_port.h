@@ -8,6 +8,11 @@
 
 /* --- Lifecycle --- */
 
+/* Routes the signals of the instance to pads (-1 leaves a signal as it is), for the chips that route them freely (the ESP32-S3: the GPIO
+ * matrix). Called before _init() when the configuration names a pad (sck_pin, mosi_pin, miso_pin, cs_pin); the ports of the chips whose
+ * pads are fixed by the alternate function of the pin (dmgpio) return -ENOTSUP. */
+dmod_dmspi_port_api(1.0, int, _set_pins, ( dmspi_instance_t instance, int sck_pin, int mosi_pin, int miso_pin, int cs_pin ) );
+
 dmod_dmspi_port_api(1.0, int, _init,   ( dmspi_instance_t instance, dmspi_role_t role ) );
 dmod_dmspi_port_api(1.0, int, _deinit, ( dmspi_instance_t instance ) );
 

@@ -135,7 +135,7 @@ static int run_single(const char *path)
     return ok ? 0 : 1;
 }
 
-static int run_echo_loopback(const char *path)
+static int run_echo_loopback(const char *path, unsigned size)
 {
     void *fp = open_device(path);
     if (fp == NULL)
@@ -157,6 +157,28 @@ static int run_echo_loopback(const char *path)
     bool ok = ret == 0 && verify_pattern("MOSI->MISO echo", rx, tx, TEST_PATTERN_LEN);
     if (ret != 0)
         DMOD_LOG_ERROR("spitest: echo transfer failed (error %d)\n", ret);
+
+    /* optionally a longer transfer too (more than one transaction of a controller with a small buffer) */
+    if (ok && size > 0)
+    {
+        uint8_t *tx_big = Dmod_Malloc(size);
+        uint8_t *rx_big = Dmod_Malloc(size);
+        ok = false;
+        if (tx_big != NULL && rx_big != NULL)
+        {
+            for (unsigned i = 0; i < size; i++)
+            {
+                tx_big[i] = (uint8_t)(i * 7U + 3U);
+                rx_big[i] = 0;
+            }
+            dmspi_transfer_t big = { .tx = tx_big, .rx = rx_big, .size = size };
+            ret = Dmod_Ioctl(fp, dmspi_ioctl_cmd_transfer, &big);
+            ok = ret == 0 && memcmp(tx_big, rx_big, size) == 0;
+            Dmod_Printf("%u-byte echo: %s (ioctl %d)\n", size, ok ? "OK" : "MISMATCH", ret);
+        }
+        Dmod_Free(tx_big);
+        Dmod_Free(rx_big);
+    }
 
     Dmod_FileClose(fp);
     Dmod_Printf("\n=== Echo loopback test ('%s'): %s ===\n", path, ok ? "PASS" : "FAIL");
@@ -270,7 +292,13 @@ int main(int argc, char *argv[])
     }
 
     if (strcmp(argv[1], "--echo") == 0)
-        return (argc >= 3 && run_echo_loopback(argv[2]) == 0) ? 0 : 1;
+    {
+        unsigned size = 0;
+        if (argc >= 4)
+            for (const char *c = argv[3]; *c >= '0' && *c <= '9'; c++)
+                size = size * 10U + (unsigned)(*c - '0');
+        return (argc >= 3 && run_echo_loopback(argv[2], size) == 0) ? 0 : 1;
+    }
 
     if (argc >= 3)
         return (run_loopback(argv[1], argv[2]) == 0) ? 0 : 1;

@@ -117,13 +117,13 @@ MCU (pin-agnostic defaults) - the same layout and mechanism `dmuart`,
 
 This module ships two DMOD modules: the architecture-independent
 `dmspi` and `dmspi_port`, which contains the
-architecture-specific implementation. `stm32f4` and `stm32f7` are supported
+architecture-specific implementation. `stm32f4`, `stm32f7` and `esp32s3` are supported
 today, sharing a common SPI register implementation (both families use the
 same SPI IP block). The active architecture is selected via
 `DMOD_CPU_FAMILY` (default: `stm32f7`):
 
 ```bash
-cmake .. -DDMOD_CPU_FAMILY=stm32f7   # or stm32f4
+cmake .. -DDMOD_CPU_FAMILY=stm32f7   # or stm32f4, esp32s3
 ```
 
 See [docs/port-implementation.md](docs/port-implementation.md) for how the

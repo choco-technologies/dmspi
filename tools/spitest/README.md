@@ -58,6 +58,15 @@ slave side in a worker thread so both sides are active at the same time:
 spitest /dev/dmspi1 /dev/dmspi2
 ```
 
+### Echo (MOSI wired to MISO, or the same pad)
+
+```
+spitest --echo /dev/dmspix/loopback_spi [bytes]
+```
+
+Sends a pattern of 16 bytes and checks it comes back; with `bytes` a second, longer transfer follows (more than one transaction of a
+controller with a small buffer, e.g. 64 bytes on the ESP32-S3).
+
 ## Exit codes
 
 - `0` - PASS
