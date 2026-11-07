@@ -49,9 +49,19 @@ static int index_of(dmspi_instance_t instance)
                ? (int)(instance - ESP32S3_SPI_FIRST_INSTANCE) : -1;
 }
 
-/* GPIO0-21 and GPIO38-48; GPIO19/20 (USB) and GPIO26-37 (the flash and the PSRAM of the module) are not for the user */
+/* The pads of the eight lines of an octal PSRAM (GPIO33-37) are free where there is none inside the package: the eFuses say so (the
+ * T-Deck Pro has a plain ESP32-S3 and its e-paper on them). An octal flash would take them too; it is not told apart here. */
+static bool octal_psram_inside(void)
+{
+    return ((*reg(ESP32S3_EFUSE_RD_MAC_SPI_SYS_4_REG) >> ESP32S3_EFUSE_PSRAM_CAP_S) & ESP32S3_EFUSE_PSRAM_CAP_M) != 0U;
+}
+
+/* GPIO0-18, 21 and 38-48; GPIO19/20 (USB) and GPIO26-32 (the flash and the PSRAM of the module) are not for the user, and GPIO33-37
+ * only where the package has no octal PSRAM */
 static bool pad_valid(int pad)
 {
+    if (pad >= 33 && pad <= 37)
+        return !octal_psram_inside();
     return pad < 0 || (pad >= 0 && pad <= 18) || pad == 21 || (pad >= 38 && pad <= 48);
 }
 

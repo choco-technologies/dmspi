@@ -62,6 +62,11 @@
 #define ESP32S3_PERIP_RST_EN0_REG       (ESP32S3_SYSTEM_BASE + 0x20UL)
 #define ESP32S3_SPI_PERIP_BIT(i)        ((i) == 0U ? (1UL << 6) : (1UL << 16))
 
+/* eFuse: what the package is said to have inside (EFUSE_RD_MAC_SPI_SYS_4_REG, PSRAM_CAP: 0 none, 1 8 MB, 2 2 MB octal PSRAM) */
+#define ESP32S3_EFUSE_RD_MAC_SPI_SYS_4_REG  0x60007054UL
+#define ESP32S3_EFUSE_PSRAM_CAP_S           3U
+#define ESP32S3_EFUSE_PSRAM_CAP_M           0x3UL
+
 /* GPIO matrix and IO MUX */
 #define ESP32S3_GPIO_BASE               0x60004000UL
 #define ESP32S3_GPIO_FUNC_IN_SEL_REG(s) (ESP32S3_GPIO_BASE + 0x154UL + 4UL * (s))
