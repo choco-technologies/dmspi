@@ -7,6 +7,7 @@
 #include "dmini.h"
 #include "dm_sw_ring.h"
 #include "dmgpio_types.h"
+#include "dmosi.h"
 #include <errno.h>
 #include <string.h>
 
@@ -33,6 +34,9 @@ struct dmdrvi_context
     dm_sw_ring_t         rx_ring;                /**< Software ring buffer for received bytes */
     uint32_t             rx_ring_size;           /**< Capacity of the RX ring buffer (from config) */
     dm_sw_ring_flags_t   rx_ring_wait_flags;     /**< RX ring read-wait behavior (from config) */
+    dmosi_mutex_t        lock;                   /**< Holds the bus from the selection of a device to its deselection */
+    char                 *alt_cs_path;           /**< The chip select of the last dmspi_ioctl_cmd_transfer_cs (NULL: none yet) */
+    void                 *alt_cs_file;           /**< Its node, kept open */
     char                 *cs_path;                /**< Friend GPIO path (NULL = unmanaged) */
     void                 *cs_file;                /**< Its node, kept open once opened (NULL: not yet) */
     bool                 cs_active_high;         /**< true = assert by driving the pin high instead of low */
@@ -80,6 +84,49 @@ static void cs_close(dmdrvi_context_t context)
     if (context->cs_file != NULL)
         Dmod_FileClose(context->cs_file);
     context->cs_file = NULL;
+}
+
+/* The line of another device's chip select (dmspi_ioctl_cmd_transfer_cs): the node is kept open while the same path is asked for */
+static int alt_cs_set(dmdrvi_context_t context, const char *path, bool active)
+{
+    if (path == NULL)
+        return 0;
+    if (context->alt_cs_path == NULL || strcmp(context->alt_cs_path, path) != 0)
+    {
+        if (context->alt_cs_file != NULL)
+            Dmod_FileClose(context->alt_cs_file);
+        context->alt_cs_file = NULL;
+        Dmod_Free(context->alt_cs_path);
+        context->alt_cs_path = Dmod_StrDup(path);
+        if (context->alt_cs_path == NULL)
+            return -ENOMEM;
+    }
+    if (context->alt_cs_file == NULL)
+    {
+        context->alt_cs_file = Dmod_FileOpen(path, "r+");
+        if (context->alt_cs_file == NULL)
+            return -ENODEV;
+    }
+    dmgpio_pins_state_t state = (active == context->cs_active_high) ? dmgpio_pins_state_all_high : dmgpio_pins_state_all_low;
+    if (Dmod_Ioctl(context->alt_cs_file, dmgpio_ioctl_cmd_set_pins_state, &state) != 0)
+    {
+        Dmod_FileClose(context->alt_cs_file);
+        context->alt_cs_file = NULL;
+        return -EIO;
+    }
+    return 0;
+}
+
+static void bus_lock(dmdrvi_context_t context)
+{
+    if (context->lock != NULL)
+        dmosi_mutex_lock(context->lock);
+}
+
+static void bus_unlock(dmdrvi_context_t context)
+{
+    if (context->lock != NULL)
+        dmosi_mutex_unlock(context->lock);
 }
 
 static void cs_assert(dmdrvi_context_t context)
@@ -482,6 +529,7 @@ dmod_dmdrvi_dif_api_declaration(2.0, dmspi, dmdrvi_context_t, _create, ( dmini_c
 
     memset(context, 0, sizeof(*context));
     context->magic = DMSPI_CONTEXT_MAGIC;
+    context->lock = dmosi_mutex_create(false);        /* (without it the bus is not held: the transfers are as they were) */
 
     if (read_config_parameters(context, config) != 0 || configure(context) != 0)
     {
@@ -565,6 +613,9 @@ dmod_dmdrvi_dif_api_declaration(2.0, dmspi, void, _free, ( dmdrvi_context_t cont
          * first (reverse order). Every completed transfer has already left CS
          * deasserted. */
         Dmod_Free(context->cs_path);
+        Dmod_Free(context->alt_cs_path);                /* (its node is not closed either, for the same reason) */
+        if (context->lock != NULL)
+            dmosi_mutex_destroy(context->lock);
         Dmod_Free(context->interrupt_handler_name);
         dmspi_port_deinit(context->config.instance);
         context->magic = 0;
@@ -657,6 +708,7 @@ dmod_dmdrvi_dif_api_declaration(2.0, dmspi, dmdrvi_ssize_t, _read, ( dmdrvi_cont
         return (dmdrvi_ssize_t)dm_sw_ring_read(context->rx_ring, buffer, ring_size);
     }
 
+    bus_lock(context);
     if (context->config.role == dmspi_role_master)
         cs_assert(context);
 
@@ -665,6 +717,7 @@ dmod_dmdrvi_dif_api_declaration(2.0, dmspi, dmdrvi_ssize_t, _read, ( dmdrvi_cont
 
     if (context->config.role == dmspi_role_master)
         cs_deassert(context);
+    bus_unlock(context);
 
     if (ret != 0)
         return 0;
@@ -701,6 +754,7 @@ dmod_dmdrvi_dif_api_declaration(2.0, dmspi, dmdrvi_ssize_t, _write, ( dmdrvi_con
     if (!is_valid_context(context) || buffer == NULL || size == 0)
         return 0;
 
+    bus_lock(context);
     if (context->config.role == dmspi_role_master)
         cs_assert(context);
 
@@ -708,6 +762,7 @@ dmod_dmdrvi_dif_api_declaration(2.0, dmspi, dmdrvi_ssize_t, _write, ( dmdrvi_con
 
     if (context->config.role == dmspi_role_master)
         cs_deassert(context);
+    bus_unlock(context);
 
     if (ret != 0)
         return 0;
@@ -741,6 +796,7 @@ dmod_dmdrvi_dif_api_declaration(2.0, dmspi, int, _ioctl, ( dmdrvi_context_t cont
         if (arg == NULL) return -EINVAL;
         dmspi_transfer_t *xfer = (dmspi_transfer_t *)arg;
 
+        bus_lock(context);
         if (context->config.role == dmspi_role_master)
             cs_assert(context);
 
@@ -748,7 +804,28 @@ dmod_dmdrvi_dif_api_declaration(2.0, dmspi, int, _ioctl, ( dmdrvi_context_t cont
 
         if (context->config.role == dmspi_role_master)
             cs_deassert(context);
+        bus_unlock(context);
 
+        return ret;
+    }
+
+    if (command == dmspi_ioctl_cmd_transfer_cs)
+    {
+        if (arg == NULL) return -EINVAL;
+        dmspi_transfer_cs_t *xfer = (dmspi_transfer_cs_t *)arg;
+        if (context->config.role != dmspi_role_master)
+            return -ENOTSUP;
+
+        bus_lock(context);
+        ret = alt_cs_set(context, xfer->chip_select, true);
+        if (ret == 0)
+        {
+            ret = dmspi_port_transfer(context->config.instance, xfer->tx, xfer->rx, xfer->size);
+            int released = alt_cs_set(context, xfer->chip_select, false);
+            if (ret == 0)
+                ret = released;
+        }
+        bus_unlock(context);
         return ret;
     }
 

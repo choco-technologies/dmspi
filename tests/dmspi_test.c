@@ -117,3 +117,36 @@ DMOD_TEST_STEP(dmspi_ioctl_answers_only_its_own_command_range)
     }
     dmini_destroy(ini);
 }
+
+DMOD_TEST_STEP(dmspi_transfer_with_another_chip_select)
+{
+    driver_t drv = { 0 };
+    DMOD_TEST_EXPECT_TRUE(get_driver(&drv));
+    if (drv.ioctl == NULL)
+    {
+        return;
+    }
+    dmini_context_t ini = dmini_create();
+    dmini_parse_string(ini, "[dmspi]\ninstance=1\nrole=master\nbaudrate=1000000\nmode=0\n");
+    dmdrvi_dev_num_t dev_num = { 0 };
+    dmdrvi_context_t ctx = drv.create(ini, &dev_num);
+    DMOD_TEST_EXPECT_NOT_NULL(ctx);
+    void* handle = (ctx != NULL) ? drv.open(ctx, DMDRVI_O_RDWR, &dev_num) : NULL;
+    if (handle != NULL)
+    {
+        uint8_t tx[2] = { 0x12, 0x34 };
+        dmspi_transfer_cs_t xfer = { .tx = tx, .rx = NULL, .size = sizeof(tx), .chip_select = "/dev/no-such-node" };
+
+        DMOD_TEST_EXPECT_EQ((int)dmspi_ioctl_cmd_transfer_cs, (int)dmspi_ioctl_cmd_transfer + 1);
+        DMOD_TEST_EXPECT_EQ(drv.ioctl(ctx, handle, dmspi_ioctl_cmd_transfer_cs, NULL), -EINVAL);
+        /* The line of the chip select cannot be opened: the transfer is not made, the bus is not left held */
+        DMOD_TEST_EXPECT_TRUE(drv.ioctl(ctx, handle, dmspi_ioctl_cmd_transfer_cs, &xfer) < 0);
+        DMOD_TEST_EXPECT_TRUE(drv.ioctl(ctx, handle, dmspi_ioctl_cmd_transfer_cs, &xfer) < 0);
+        drv.close(ctx, handle);
+    }
+    if (ctx != NULL)
+    {
+        drv.free(ctx);
+    }
+    dmini_destroy(ini);
+}
