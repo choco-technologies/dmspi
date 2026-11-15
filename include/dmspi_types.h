@@ -98,6 +98,7 @@ typedef enum
     dmspi_ioctl_cmd_set_interrupt_handler,      /**< Set interrupt handler; arg = dmspi_interrupt_handler_t* */
     dmspi_ioctl_cmd_reconfigure,                /**< Reconfigure SPI with current settings */
     dmspi_ioctl_cmd_transfer,                   /**< Full-duplex transfer; arg = dmspi_transfer_t* */
+    dmspi_ioctl_cmd_transfer_cs,                /**< Full-duplex transfer framed by another chip select; arg = dmspi_transfer_cs_t* */
 
     dmspi_ioctl_cmd_max
 } dmspi_ioctl_cmd_t;
@@ -122,6 +123,23 @@ typedef struct
     uint8_t       *rx;   /**< Buffer to receive into (may be NULL) */
     size_t         size; /**< Number of bytes to exchange */
 } dmspi_transfer_t;
+
+/**
+ * @brief A transfer to a device that is not the one of the friends_group: dmspi_ioctl_cmd_transfer_cs.
+ *
+ * Several devices share a bus (on the T-Deck Pro: the e-paper, the LoRa radio and the SD card on GP-SPI2) but the node of the bus has one
+ * chip_select friend. A driver of another device gives the node of its own chip select (a dmgpio output, active as cs_active_level
+ * says) here: the transfer is framed by that line, and the chip select of the friends_group stays deselected. The transfer is exclusive:
+ * the bus is held from the selection to the deselection, whoever else uses it.
+ * The clock mode and the speed are those of the bus (the same for every device on it).
+ */
+typedef struct
+{
+    const uint8_t *tx;           /**< Bytes to transmit (may be NULL) */
+    uint8_t       *rx;           /**< Buffer to receive into (may be NULL) */
+    size_t         size;         /**< Number of bytes to exchange */
+    const char    *chip_select;  /**< The node of a dmgpio output (e.g. "/dev/dmgpio1"); NULL: no chip select at all */
+} dmspi_transfer_cs_t;
 
 /**
  * @brief Parameters passed to a dmhaman-registered interrupt handler.
