@@ -23,6 +23,8 @@ definitions.
 | `dmspi_nss_mode_t` | `dmspi_nss_mode_soft` / `_hard` - see [configuration.md](configuration.md) |
 | `dmspi_int_trigger_t` | Interrupt trigger bitmask: `rx_not_empty`, `tx_empty`, `error` |
 | `dmspi_transfer_t` | Full-duplex transfer descriptor (`tx`, `rx`, `size`) used with `dmspi_ioctl_cmd_transfer` |
+| `dmspi_transfer_cs_t` | One transfer framed by another device's chip select (`dmspi_ioctl_cmd_transfer_cs`) |
+| `dmspi_session_t` | A device selected for several transfers in a row (`dmspi_ioctl_cmd_session_begin` / `_session_transfer` / `_session_end`): the bus is held and the chip select kept from the begin to the end, at the `baudrate` given (0: the bus's own, which is given back at the end). For a device that answers a command many bytes later and wants its chip select low all the time (an SD card in the SPI mode). The three calls come from one thread; keep the session short, the bus is held |
 | `dmspi_config_t` | Full driver configuration (see [include/dmspi.h](../include/dmspi.h)) |
 
 Data frames are always 8 bits wide; 16-bit frame support is not implemented.
