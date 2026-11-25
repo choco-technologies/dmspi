@@ -37,6 +37,9 @@ struct dmdrvi_context
     dmosi_mutex_t        lock;                   /**< Holds the bus from the selection of a device to its deselection */
     char                 *alt_cs_path;           /**< The chip select of the last dmspi_ioctl_cmd_transfer_cs (NULL: none yet) */
     void                 *alt_cs_file;           /**< Its node, kept open */
+    bool                 session_open;           /**< A dmspi_ioctl_cmd_session_begin is not ended: the bus lock is held */
+    char                 *session_cs;            /**< The chip select of the session (NULL: none) */
+    dmspi_baudrate_t     session_saved_baudrate; /**< The speed to give back at the end of a session (0: unchanged) */
     char                 *cs_path;                /**< Friend GPIO path (NULL = unmanaged) */
     void                 *cs_file;                /**< Its node, kept open once opened (NULL: not yet) */
     bool                 cs_active_high;         /**< true = assert by driving the pin high instead of low */
@@ -613,6 +616,7 @@ dmod_dmdrvi_dif_api_declaration(2.0, dmspi, void, _free, ( dmdrvi_context_t cont
          * first (reverse order). Every completed transfer has already left CS
          * deasserted. */
         Dmod_Free(context->cs_path);
+        Dmod_Free(context->session_cs);
         Dmod_Free(context->alt_cs_path);                /* (its node is not closed either, for the same reason) */
         if (context->lock != NULL)
             dmosi_mutex_destroy(context->lock);
@@ -825,6 +829,60 @@ dmod_dmdrvi_dif_api_declaration(2.0, dmspi, int, _ioctl, ( dmdrvi_context_t cont
             if (ret == 0)
                 ret = released;
         }
+        bus_unlock(context);
+        return ret;
+    }
+
+    if (command == dmspi_ioctl_cmd_session_begin)
+    {
+        if (arg == NULL) return -EINVAL;
+        const dmspi_session_t *session = (const dmspi_session_t *)arg;
+        if (context->config.role != dmspi_role_master)
+            return -ENOTSUP;
+
+        bus_lock(context);                  /* held until _session_end (a mutex of the thread: the calls come from one) */
+        context->session_saved_baudrate = 0;
+        if (session->baudrate != 0U)
+        {
+            dmspi_baudrate_t before = dmspi_port_get_baudrate(context->config.instance);
+            ret = dmspi_port_set_baudrate(context->config.instance, session->baudrate);
+            if (ret == 0)
+                context->session_saved_baudrate = before;
+        }
+        if (ret == 0)
+            ret = alt_cs_set(context, session->chip_select, true);
+        if (ret != 0)
+        {
+            if (context->session_saved_baudrate != 0U)
+                dmspi_port_set_baudrate(context->config.instance, context->session_saved_baudrate);
+            context->session_saved_baudrate = 0;
+            bus_unlock(context);
+            return ret;
+        }
+        Dmod_Free(context->session_cs);
+        context->session_cs = session->chip_select != NULL ? Dmod_StrDup(session->chip_select) : NULL;
+        context->session_open = true;
+        return 0;
+    }
+
+    if (command == dmspi_ioctl_cmd_session_transfer)
+    {
+        if (arg == NULL) return -EINVAL;
+        if (!context->session_open) return -EPERM;
+        dmspi_transfer_t *xfer = (dmspi_transfer_t *)arg;
+        return dmspi_port_transfer(context->config.instance, xfer->tx, xfer->rx, xfer->size);
+    }
+
+    if (command == dmspi_ioctl_cmd_session_end)
+    {
+        if (!context->session_open) return -EPERM;
+        context->session_open = false;
+        ret = alt_cs_set(context, context->session_cs, false);
+        Dmod_Free(context->session_cs);
+        context->session_cs = NULL;
+        if (context->session_saved_baudrate != 0U)
+            dmspi_port_set_baudrate(context->config.instance, context->session_saved_baudrate);
+        context->session_saved_baudrate = 0;
         bus_unlock(context);
         return ret;
     }

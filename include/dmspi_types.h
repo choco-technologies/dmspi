@@ -99,6 +99,9 @@ typedef enum
     dmspi_ioctl_cmd_reconfigure,                /**< Reconfigure SPI with current settings */
     dmspi_ioctl_cmd_transfer,                   /**< Full-duplex transfer; arg = dmspi_transfer_t* */
     dmspi_ioctl_cmd_transfer_cs,                /**< Full-duplex transfer framed by another chip select; arg = dmspi_transfer_cs_t* */
+    dmspi_ioctl_cmd_session_begin,              /**< Hold the bus and select a device until _session_end; arg = dmspi_session_t* */
+    dmspi_ioctl_cmd_session_transfer,           /**< Transfer inside a session, the chip select stays as it is; arg = dmspi_transfer_t* */
+    dmspi_ioctl_cmd_session_end,                /**< Deselect the device, give the bus back (arg unused) */
 
     dmspi_ioctl_cmd_max
 } dmspi_ioctl_cmd_t;
@@ -140,6 +143,21 @@ typedef struct
     size_t         size;         /**< Number of bytes to exchange */
     const char    *chip_select;  /**< The node of a dmgpio output (e.g. "/dev/dmgpio1"); NULL: no chip select at all */
 } dmspi_transfer_cs_t;
+
+/**
+ * @brief A device selected for several transfers in a row: dmspi_ioctl_cmd_session_begin.
+ *
+ * dmspi_ioctl_cmd_transfer_cs frames ONE transfer. A device that answers a command many bytes later (an SD card in the SPI mode: the
+ * command, the wait for the response, the data block) needs its chip select held low all the time and nobody else on the bus. A session
+ * is that: _session_begin takes the bus and selects the device, every _session_transfer clocks bytes without touching the chip select, and
+ * _session_end deselects it and gives the bus back (and the speed it had). The calls must come from the same thread; the bus is held in
+ * between, so a session is to be kept short.
+ */
+typedef struct
+{
+    const char    *chip_select;  /**< The node of a dmgpio output; NULL: no chip select (the bus is held, nobody is selected) */
+    uint32_t       baudrate;     /**< SCK frequency for the session, Hz (0: the one of the bus); the bus goes back to its own at the end */
+} dmspi_session_t;
 
 /**
  * @brief Parameters passed to a dmhaman-registered interrupt handler.
