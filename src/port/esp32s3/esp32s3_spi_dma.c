@@ -19,6 +19,15 @@
 
 #define BOUNCE_BYTES        4092U               /* one descriptor; a multiple of 4 */
 #define DMA_SLACK_MS        100U
+#define SPI_DMA_INT_FIFO_ERRORS (SPI_DMA_INT_INFIFO_FULL_ERR | SPI_DMA_INT_OUTFIFO_EMPTY_ERR)
+/* GDMA (ESP32-S3 TRM): the OUT side of channel n - its raw interrupts and the state of its FIFO */
+#define GDMA_BASE                   0x6003F000UL
+#define GDMA_CH_STRIDE              0xC0UL
+#define GDMA_OUT_INT_RAW            0x68UL
+#define GDMA_OUT_INT_EOF            (1UL << 1)      /* the last data of the list has been taken from the memory */
+#define GDMA_OUTFIFO_STATUS         0x78UL
+#define GDMA_OUTFIFO_FULL_L1        (1UL << 0)      /* the FIFO of the channel is full: the one of the SPI before it is, too */
+#define PREFILL_POLLS               20000U          /* a limit only: the GDMA fills the FIFO within microseconds */
 #define GDMA_CONTROLLER     0U
 #define GDMA_STREAMS        5U
 #define INTERNAL_RAM_START  0x3FC88000UL
@@ -36,6 +45,9 @@ typedef struct
     volatile uint32_t   last_event;
     bool                unavailable;
     bool                reported;
+    uint8_t             tx_stream;              /* the GDMA channel of the TX stream */
+    uint32_t            underruns;              /* transfers failed because the TX FIFO ran empty */
+    uint32_t            overflows;              /* transfers failed because the RX FIFO overflowed */
 } spi_dma_t;
 
 static spi_dma_t dma_state[ESP32S3_SPI_COUNT];
@@ -108,6 +120,8 @@ static bool dma_ensure(unsigned index)
         d->rx = acquire_stream(d, 0, &rx_stream);
     if (d->tx == NULL && d->rx != NULL)
         d->tx = acquire_stream(d, (uint8_t)(rx_stream + 1U), &tx_stream);
+    if (d->tx != NULL)
+        d->tx_stream = tx_stream;
     if (d->tx_buf == NULL)
         d->tx_buf = Dmod_MallocTagged("dma", BOUNCE_BYTES);
     if (d->rx_buf == NULL)
@@ -150,6 +164,21 @@ static void update(unsigned index)
     while ((*creg(index, SPI_CMD_REG) & SPI_CMD_UPDATE) && --guard != 0U) { }
 }
 
+/*
+ * Waits until the GDMA has put the data to send into the FIFO before the transaction starts: started at once, the controller began
+ * shifting before the GDMA - which shares the bus with the display's streams - had given it the first bytes, and the TX FIFO ran empty
+ * (measured on the Elecrow DIS08070H: SPI_DMA_INT_RAW bit 1, blocks written to an SD card corrupted within their first bytes). Ready:
+ * the FIFO of the channel is full (the SPI's before it is, too), or the whole buffer has been taken from the memory.
+ */
+static void prefill(const spi_dma_t *d)
+{
+    volatile uint32_t *status = (volatile uint32_t *)(GDMA_BASE + (uint32_t)d->tx_stream * GDMA_CH_STRIDE + GDMA_OUTFIFO_STATUS);
+    volatile uint32_t *raw = (volatile uint32_t *)(GDMA_BASE + (uint32_t)d->tx_stream * GDMA_CH_STRIDE + GDMA_OUT_INT_RAW);
+    for (uint32_t polls = 0; polls < PREFILL_POLLS && (*status & GDMA_OUTFIFO_FULL_L1) == 0U && (*raw & GDMA_OUT_INT_EOF) == 0U; polls++)
+    {
+    }
+}
+
 /* One transaction of `n` bytes between internal-RAM buffers (the RX one is a multiple of 4 bytes long) */
 static int run_chunk(unsigned index, spi_dma_t *d, const uint8_t *txp, uint8_t *rxp, size_t n, size_t rx_n, uint32_t baudrate)
 {
@@ -163,7 +192,7 @@ static int run_chunk(unsigned index, spi_dma_t *d, const uint8_t *txp, uint8_t *
     *creg(index, SPI_DMA_CONF_REG) |= SPI_DMA_CONF_DMA_AFIFO_RST | SPI_DMA_CONF_RX_AFIFO_RST | SPI_DMA_CONF_BUF_AFIFO_RST;
     *creg(index, SPI_DMA_CONF_REG) &= ~(SPI_DMA_CONF_DMA_AFIFO_RST | SPI_DMA_CONF_RX_AFIFO_RST | SPI_DMA_CONF_BUF_AFIFO_RST);
     *creg(index, SPI_MS_DLEN_REG) = (uint32_t)n * 8U - 1U;
-    *creg(index, SPI_DMA_INT_CLR_REG) = SPI_DMA_INT_TRANS_DONE;
+    *creg(index, SPI_DMA_INT_CLR_REG) = SPI_DMA_INT_TRANS_DONE | SPI_DMA_INT_FIFO_ERRORS;
     *creg(index, SPI_DMA_CONF_REG) |= SPI_DMA_CONF_DMA_RX_ENA | SPI_DMA_CONF_DMA_TX_ENA;
     update(index);
 
@@ -177,7 +206,7 @@ static int run_chunk(unsigned index, spi_dma_t *d, const uint8_t *txp, uint8_t *
         .source_increment      = false,
         .destination_increment = true,
         .circular              = false,
-        .priority              = dmdma_priority_high,
+        .priority              = dmdma_priority_very_high,
         .element_count         = rx_n,
         .timeout_ms            = 0,
     };
@@ -191,7 +220,7 @@ static int run_chunk(unsigned index, spi_dma_t *d, const uint8_t *txp, uint8_t *
         .source_increment      = true,
         .destination_increment = false,
         .circular              = false,
-        .priority              = dmdma_priority_medium,
+        .priority              = dmdma_priority_very_high,
         .element_count         = n,
         .timeout_ms            = 0,
     };
@@ -203,6 +232,7 @@ static int run_chunk(unsigned index, spi_dma_t *d, const uint8_t *txp, uint8_t *
         why = "the TX stream did not start";
         if (dmdma_lease_start(d->tx, &tx_cfg) == 0)
         {
+            prefill(d);
             *creg(index, SPI_CMD_REG) |= SPI_CMD_USR;
             if (dmosi_semaphore_wait(d->done, 1, (int32_t)wait_ms) != 0)
                 why = "no end of the transfer in time";
@@ -217,7 +247,16 @@ static int run_chunk(unsigned index, spi_dma_t *d, const uint8_t *txp, uint8_t *
     uint64_t start = Dmod_GetUptime();
     while (ret == 0 && !(*creg(index, SPI_DMA_INT_RAW_REG) & SPI_DMA_INT_TRANS_DONE) && Dmod_GetUptime() - start < wait_ms)
         ;
-    *creg(index, SPI_DMA_INT_CLR_REG) = SPI_DMA_INT_TRANS_DONE;
+    /* A FIFO the DMA did not keep up with: what went out (underrun) or came in (overflow) is not the buffer - the transfer failed */
+    uint32_t errors = *creg(index, SPI_DMA_INT_RAW_REG) & SPI_DMA_INT_FIFO_ERRORS;
+    if (ret == 0 && errors != 0U)
+    {
+        ret = -1;
+        d->underruns += (errors & SPI_DMA_INT_OUTFIFO_EMPTY_ERR) != 0U;
+        d->overflows += (errors & SPI_DMA_INT_INFIFO_FULL_ERR) != 0U;
+        why = (errors & SPI_DMA_INT_OUTFIFO_EMPTY_ERR) != 0U ? "the TX FIFO ran empty (underrun)" : "the RX FIFO overflowed";
+    }
+    *creg(index, SPI_DMA_INT_CLR_REG) = SPI_DMA_INT_TRANS_DONE | SPI_DMA_INT_FIFO_ERRORS;
     *creg(index, SPI_DMA_CONF_REG) &= ~(SPI_DMA_CONF_DMA_RX_ENA | SPI_DMA_CONF_DMA_TX_ENA);
     d->active = false;
     dmdma_lease_abort(d->tx);

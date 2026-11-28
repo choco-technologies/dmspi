@@ -49,6 +49,8 @@
 #define SPI_DMA_CONF_BUF_AFIFO_RST      (1UL << 30)
 #define SPI_DMA_CONF_DMA_AFIFO_RST      (1UL << 31)
 #define SPI_DMA_CONF_RX_EOF_EN          (1UL << 21)
+#define SPI_DMA_INT_INFIFO_FULL_ERR     (1UL << 0)     /* RX: the DMA did not take the received data in time (overflow) */
+#define SPI_DMA_INT_OUTFIFO_EMPTY_ERR   (1UL << 1)     /* TX: the DMA did not give the data to send in time (underrun) */
 #define SPI_DMA_INT_TRANS_DONE          (1UL << 12)
 #define SPI_SLAVE_SLAVE_MODE            (1UL << 26)
 #define SPI_SLAVE_SOFT_RESET            (1UL << 27)
